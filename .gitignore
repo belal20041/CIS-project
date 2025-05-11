@@ -1,0 +1,9 @@
+data/ 
+*.parquet 
+models/ 
+mlruns/ 
+.ipynb_checkpoints/ 
+.jupyter/ 
+.virtual_documents/ 
+*.zip 
+*.jpg 
