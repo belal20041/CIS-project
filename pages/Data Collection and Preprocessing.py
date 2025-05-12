@@ -348,19 +348,12 @@ def engineer_features(train, test, numeric_cols, categorical_cols, target_col='s
 
     return train_fe, test_fe
 
-def get_download_file(df, filename, format_type):
-    """Generate downloadable file. Assigned to: Mohamed Samy"""
-    if format_type == 'CSV':
-        buffer = BytesIO()
-        df.to_csv(buffer, index=False)
-        buffer.seek(0)
-        return buffer.getvalue(), 'text/csv'
-    elif format_type == 'Parquet':
-        buffer = BytesIO()
-        df.to_parquet(buffer, index=False)
-        buffer.seek(0)
-        return buffer.getvalue(), 'application/octet-stream'
-    return None, None
+def get_download_file(df, filename):
+    """Generate downloadable CSV file. Assigned to: Mohamed Samy"""
+    buffer = BytesIO()
+    df.to_csv(buffer, index=False)
+    buffer.seek(0)
+    return buffer.getvalue(), 'text/csv'
 
 def main():
     st.divider()
@@ -415,7 +408,6 @@ def main():
                         train_outlier_method = st.selectbox("Outliers", ['None', 'Remove', 'Replace with Median'], key="train_outliers")
                         train_outlier_method = train_outlier_method.lower() if train_outlier_method != 'None' else None
                         train_normalize = st.checkbox("Normalize Numerics")
-                        train_save_format = st.selectbox("Download As", ['CSV', 'Parquet'], key="train_save")
                         st.form_submit_button("Apply Configuration", on_click=lambda: st.session_state.update({
                             'train_date_col': train_date_col,
                             'train_target_col': train_target_col,
@@ -424,8 +416,7 @@ def main():
                             'train_date_col': apply_column_type_changes(train_df, train_type_changes, train_date_col)[3],
                             'train_type_changes': train_type_changes,
                             'train_outlier_method': train_outlier_method,
-                            'train_normalize': train_normalize,
-                            'train_save_format': train_save_format
+                            'train_normalize': train_normalize
                         }))
 
                     # Exploration and Preprocessing
@@ -442,7 +433,6 @@ def main():
                             train_type_changes = st.session_state.get('train_type_changes', {})
                             train_outlier_method = st.session_state.get('train_outlier_method', None)
                             train_normalize = st.session_state.get('train_normalize', False)
-                            train_save_format = st.session_state.get('train_save_format', 'CSV')
 
                             # Apply type changes
                             train_df = apply_column_type_changes(train_df, train_type_changes, train_date_col)[0]
@@ -469,23 +459,20 @@ def main():
                                 st.markdown("**Feature Engineered Train Data**")
                                 st.dataframe(train_fe.head(), height=150)
 
-                                # Save locally
-                                output_path = os.path.join("data", f"train_m1.{train_save_format.lower()}")
-                                if train_save_format == 'CSV':
-                                    train_fe.to_csv(output_path, index=False)
-                                else:
-                                    train_fe.to_parquet(output_path, index=False)
+                                # Save locally as CSV
+                                output_path = os.path.join("data", "train_m1.csv")
+                                train_fe.to_csv(output_path, index=False)
                                 st.success(f"Saved to {output_path}")
                                 os.system(f"dvc add {output_path}")
                                 os.system(f"git add {output_path}.dvc")
                                 os.system('git commit -m "Add processed train dataset to DVC"')
 
-                                # Download button
-                                file_data, mime_type = get_download_file(train_fe, f"train_m1.{train_save_format.lower()}", train_save_format)
+                                # Download button for CSV
+                                file_data, mime_type = get_download_file(train_fe, "train_m1.csv")
                                 st.download_button(
-                                    label=f"Download Train Data ({train_save_format})",
+                                    label="Download Train Data (CSV)",
                                     data=file_data,
-                                    file_name=f"train_m1.{train_save_format.lower()}",
+                                    file_name="train_m1.csv",
                                     mime=mime_type
                                 )
 
@@ -522,7 +509,6 @@ def main():
                         test_outlier_method = st.selectbox("Outliers", ['None', 'Remove', 'Replace with Median'], key="test_outliers")
                         test_outlier_method = test_outlier_method.lower() if test_outlier_method != 'None' else None
                         test_normalize = st.checkbox("Normalize Numerics")
-                        test_save_format = st.selectbox("Download As", ['CSV', 'Parquet'], key="test_save")
                         st.form_submit_button("Apply Configuration", on_click=lambda: st.session_state.update({
                             'test_date_col': test_date_col,
                             'test_numeric_cols': apply_column_type_changes(test_df, test_type_changes, test_date_col)[1],
@@ -530,8 +516,7 @@ def main():
                             'test_date_col': apply_column_type_changes(test_df, test_type_changes, test_date_col)[3],
                             'test_type_changes': test_type_changes,
                             'test_outlier_method': test_outlier_method,
-                            'test_normalize': test_normalize,
-                            'test_save_format': test_save_format
+                            'test_normalize': test_normalize
                         }))
 
                     # Exploration and Preprocessing
@@ -547,7 +532,6 @@ def main():
                             test_type_changes = st.session_state.get('test_type_changes', {})
                             test_outlier_method = st.session_state.get('test_outlier_method', None)
                             test_normalize = st.session_state.get('test_normalize', False)
-                            test_save_format = st.session_state.get('test_save_format', 'CSV')
 
                             # Apply type changes
                             test_df = apply_column_type_changes(test_df, test_type_changes, test_date_col)[0]
@@ -576,23 +560,20 @@ def main():
                                 st.markdown("**Feature Engineered Test Data**")
                                 st.dataframe(test_fe.head(), height=150)
 
-                                # Save locally
-                                output_path = os.path.join("data", f"test_m1.{test_save_format.lower()}")
-                                if test_save_format == 'CSV':
-                                    test_fe.to_csv(output_path, index=False)
-                                else:
-                                    test_fe.to_parquet(output_path, index=False)
+                                # Save locally as CSV
+                                output_path = os.path.join("data", "test_m1.csv")
+                                test_fe.to_csv(output_path, index=False)
                                 st.success(f"Saved to {output_path}")
                                 os.system(f"dvc add {output_path}")
                                 os.system(f"git add {output_path}.dvc")
                                 os.system('git commit -m "Add processed test dataset to DVC"')
 
-                                # Download button
-                                file_data, mime_type = get_download_file(test_fe, f"test_m1.{test_save_format.lower()}", test_save_format)
+                                # Download button for CSV
+                                file_data, mime_type = get_download_file(test_fe, "test_m1.csv")
                                 st.download_button(
-                                    label=f"Download Test Data ({test_save_format})",
+                                    label="Download Test Data (CSV)",
                                     data=file_data,
-                                    file_name=f"test_m1.{test_save_format.lower()}",
+                                    file_name="test_m1.csv",
                                     mime=mime_type
                                 )
 
