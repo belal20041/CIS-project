@@ -9,8 +9,9 @@ from scipy.stats import zscore
 from sklearn.preprocessing import MinMaxScaler
 import os
 import uuid
+from io import BytesIO
 
-st.set_page_config(page_title="Milestone 1", layout="wide")
+st.set_page_config(page_title="Milestone 1: Data Collection, Exploration, Preprocessing", layout="wide")
 st.markdown("<h1 style='text-align: center;'>Data Collection & Preprocessing</h1>", unsafe_allow_html=True)
 
 def load_data(file, dataset_type="train"):
@@ -22,7 +23,8 @@ def load_data(file, dataset_type="train"):
     else:
         st.error("Unsupported format. Use CSV or Parquet.")
         return None
-    df = df.loc[:, ~df.columns.str.contains('^Unnamed')]  # Hoda Magdy: Fix inconsistencies
+    df = df.loc[:, ~df.columns.str.contains('^unnamed')]  # Hoda Magdy: Fix inconsistencies
+    df.columns = df.columns.str.lower().str.strip().str.replace(" ", "_")  # Standardize names
     return df
 
 def detect_column_types(df, date_col=None):
@@ -66,6 +68,25 @@ def apply_column_type_changes(df, type_changes, date_col=None):
         categorical_cols = [col for col in categorical_cols if col != date_col]
     return df_modified, numeric_cols, categorical_cols, date_col
 
+def clean_text_columns(df, columns):
+    """Clean text columns and fix typos. Assigned to: Hoda Magdy"""
+    df_clean = df.copy()
+    def clean_text(text):
+        if isinstance(text, str):
+            return text.strip().capitalize()
+        return text
+    for col in columns:
+        if col in df_clean.columns:
+            df_clean[col] = df_clean[col].apply(clean_text)
+    corrections = {
+        "fundacion de guayaquil-1": "Fundacion de guayaquil",
+        "santo domingo de los tsachilas": "Santo domingo"
+    }
+    for col in ['description', 'locale_name']:
+        if col in df_clean.columns:
+            df_clean[col] = df_clean[col].apply(lambda x: corrections.get(x, x))
+    return df_clean
+
 def explore_data(df, date_col=None, numeric_cols=None, categorical_cols=None, dataset_type="train"):
     """EDA: trends, seasonality, outliers. Assigned to: Belal Khamis"""
     with st.container():
@@ -78,10 +99,17 @@ def explore_data(df, date_col=None, numeric_cols=None, categorical_cols=None, da
         with col2:
             st.write("**Data Types**:")
             st.dataframe(df.dtypes.reset_index().rename(columns={0: 'Type', 'index': 'Column'}))
+            st.write("**Unique Values per Column**:", df.nunique().to_dict())
+
+        # Missing values visualization
+        st.markdown("**Missing Values Matrix**")
+        fig, ax = plt.subplots(figsize=(10, 4))
+        msno.matrix(df, ax=ax)
+        st.pyplot(fig)
 
         # Visualizations
         sns.set_style("whitegrid")
-        if date_col:
+        if date_col and date_col in df.columns:
             try:
                 df[date_col] = pd.to_datetime(df[date_col], errors='coerce')
                 if 'sales' in df.columns:
@@ -89,6 +117,9 @@ def explore_data(df, date_col=None, numeric_cols=None, categorical_cols=None, da
                     fig, ax = plt.subplots(figsize=(8, 4))
                     df.groupby(date_col)['sales'].sum().plot(ax=ax)
                     ax.set_title("Sales Over Time")
+                    ax.set_xlabel("Date")
+                    ax.set_ylabel("Sales")
+                    plt.xticks(rotation=45)
                     st.pyplot(fig)
 
                     st.markdown("**Monthly Seasonality**")
@@ -100,6 +131,19 @@ def explore_data(df, date_col=None, numeric_cols=None, categorical_cols=None, da
             except:
                 st.warning(f"Cannot process {date_col} for trends.")
 
+        # Sales distribution by categorical columns
+        for col in ['family', 'city', 'state', 'store_nbr']:
+            if col in df.columns and 'sales' in df.columns:
+                st.markdown(f"**Sales Distribution by {col.capitalize()}**")
+                fig, ax = plt.subplots(figsize=(12, 4))
+                sns.boxplot(data=df, x=col, y='sales', ax=ax)
+                ax.set_title(f"Sales Distribution by {col.capitalize()}")
+                ax.set_xlabel(col.capitalize())
+                ax.set_ylabel("Sales")
+                plt.xticks(rotation=45)
+                st.pyplot(fig)
+
+        # Sales vs. promotions
         if 'sales' in df.columns and 'onpromotion' in df.columns:
             st.markdown("**Sales vs. Promotions**")
             fig, ax = plt.subplots(figsize=(8, 4))
@@ -107,10 +151,30 @@ def explore_data(df, date_col=None, numeric_cols=None, categorical_cols=None, da
             ax.set_title("Sales vs. Promotions")
             st.pyplot(fig)
 
+        # Holiday distribution
         if 'transferred' in df.columns:
             st.markdown("**Holiday Distribution**")
             st.dataframe(df['transferred'].value_counts())
 
+        # Sales distribution
+        if 'sales' in df.columns:
+            st.markdown("**Sales Distribution**")
+            fig, ax = plt.subplots(figsize=(8, 4))
+            sns.histplot(df['sales'], bins=30, kde=True, ax=ax)
+            ax.set_title("Sales Distribution")
+            ax.set_xlabel("Sales")
+            ax.set_ylabel("Frequency")
+            st.pyplot(fig)
+
+        # Correlation heatmap
+        if numeric_cols:
+            st.markdown("**Correlation Heatmap**")
+            fig, ax = plt.subplots(figsize=(8, 6))
+            sns.heatmap(df[numeric_cols].corr(), annot=True, cmap='coolwarm', fmt=".2f", linewidths=0.5, ax=ax)
+            ax.set_title("Correlation Heatmap")
+            st.pyplot(fig)
+
+        # Outliers
         if numeric_cols:
             valid_numeric_cols = [col for col in numeric_cols if pd.api.types.is_numeric_dtype(df[col])]
             if valid_numeric_cols:
@@ -162,26 +226,28 @@ def preprocess_data(df, numeric_cols=None, categorical_cols=None, date_col=None,
     if numeric_cols and handle_outliers:
         if handle_outliers == 'remove':
             for col in numeric_cols:
-                Q1 = df_clean[col].quantile(0.25)
-                Q3 = df_clean[col].quantile(0.75)
-                IQR = Q3 - Q1
-                lower_bound = Q1 - 1.5 * IQR
-                upper_bound = Q3 + 1.5 * IQR
-                df_clean = df_clean[(df_clean[col] >= lower_bound) & (df_clean[col] <= upper_bound)]
+                if col in df_clean.columns:
+                    Q1 = df_clean[col].quantile(0.25)
+                    Q3 = df_clean[col].quantile(0.75)
+                    IQR = Q3 - Q1
+                    lower_bound = Q1 - 1.5 * IQR
+                    upper_bound = Q3 + 1.5 * IQR
+                    df_clean = df_clean[(df_clean[col] >= lower_bound) & (df_clean[col] <= upper_bound)]
         elif handle_outliers == 'replace':
             for col in numeric_cols:
-                Q1 = df_clean[col].quantile(0.25)
-                Q3 = df_clean[col].quantile(0.75)
-                IQR = Q3 - Q1
-                lower_bound = Q1 - 1.5 * IQR
-                upper_bound = Q3 + 1.5 * IQR
-                median_value = df_clean[col].median()
-                df_clean[col] = df_clean[col].apply(
-                    lambda x: median_value if (x < lower_bound or x > upper_bound) else x
-                )
+                if col in df_clean.columns:
+                    Q1 = df_clean[col].quantile(0.25)
+                    Q3 = df_clean[col].quantile(0.75)
+                    IQR = Q3 - Q1
+                    lower_bound = Q1 - 1.5 * IQR
+                    upper_bound = Q3 + 1.5 * IQR
+                    median_value = df_clean[col].median()
+                    df_clean[col] = df_clean[col].apply(
+                        lambda x: median_value if (x < lower_bound or x > upper_bound) else x
+                    )
 
     # Time features. Assigned to: Mohamed Samy
-    if date_col:
+    if date_col and date_col in df_clean.columns and 'year' not in df_clean.columns:  # Skip if already present
         try:
             df_clean[date_col] = pd.to_datetime(df_clean[date_col], errors='coerce')
             df_clean['day'] = df_clean[date_col].dt.day
@@ -189,26 +255,128 @@ def preprocess_data(df, numeric_cols=None, categorical_cols=None, date_col=None,
             df_clean['year'] = df_clean[date_col].dt.year
             df_clean['dayofweek'] = df_clean[date_col].dt.dayofweek
             df_clean['sin_month'] = np.sin(2 * np.pi * df_clean['month'] / 12)
+            df_clean['week'] = df_clean[date_col].dt.isocalendar().week
+            df_clean['is_weekend'] = df_clean[date_col].dt.weekday.apply(lambda x: 1 if x >= 5 else 0)
+            df_clean['season'] = pd.cut(df_clean['month'], bins=[0, 3, 6, 9, 12], labels=['Q1', 'Q2', 'Q3', 'Q4'])
         except:
             st.warning(f"Cannot process time features for {date_col}.")
 
     # Normalization. Assigned to: Mohamed Samy
     if normalize and numeric_cols:
-        scaler = MinMaxScaler()
-        df_clean[numeric_cols] = scaler.fit_transform(df_clean[numeric_cols])
+        valid_numeric_cols = [col for col in numeric_cols if col in df_clean.columns and df_clean[col].std() > 1e-6]
+        if valid_numeric_cols:
+            scaler = MinMaxScaler()
+            df_clean[valid_numeric_cols] = scaler.fit_transform(df_clean[valid_numeric_cols]) if dataset_type == "train" else scaler.transform(df_clean[valid_numeric_cols])
+
+    # Text cleaning. Assigned to: Hoda Magdy
+    text_cols = ["family", "city", "state", "cluster", "type_y", "locale", "locale_name", "description", "transferred"]
+    df_clean = clean_text_columns(df_clean, text_cols)
 
     return df_clean, initial_rows - df_clean.shape[0]
+
+def engineer_features(train, test, numeric_cols, categorical_cols, target_col='sales'):
+    """Feature engineering. Assigned to: Mohamed Samy"""
+    train_fe = train.copy()
+    test_fe = test.copy()
+
+    # Interaction terms
+    if target_col in train_fe.columns and 'onpromotion' in train_fe.columns:
+        train_fe['sales_onpromo'] = train_fe[target_col] * train_fe['onpromotion']
+        if 'onpromotion' in test_fe.columns:
+            test_fe['sales_onpromo'] = test_fe['onpromotion'] * 0  # Placeholder for test
+
+    if 'onpromotion' in train_fe.columns and 'is_weekend' in train_fe.columns:
+        train_fe['promo_weekend'] = train_fe['onpromotion'] * train_fe['is_weekend']
+        if 'onpromotion' in test_fe.columns and 'is_weekend' in test_fe.columns:
+            test_fe['promo_weekend'] = test_fe['onpromotion'] * test_fe['is_weekend']
+
+    # Mean encoding
+    for col in ['city', 'state']:
+        if col in train_fe.columns and target_col in train_fe.columns:
+            mean_map = train_fe.groupby(col)[target_col].mean().to_dict()
+            train_fe[f'{col}_encoded'] = train_fe[col].map(mean_map)
+            if col in test_fe.columns:
+                test_fe[f'{col}_encoded'] = test_fe[col].map(mean_map).fillna(train_fe[target_col].mean())
+
+    # Frequency encoding
+    for col in ['family', 'locale_name']:
+        if col in train_fe.columns:
+            freq_map = train_fe[col].value_counts(normalize=True).to_dict()
+            train_fe[f'{col}_encoded'] = train_fe[col].map(freq_map)
+            if col in test_fe.columns:
+                test_fe[f'{col}_encoded'] = test_fe[col].map(freq_map).fillna(0)
+
+    # Average sales per store and month
+    if 'store_nbr' in train_fe.columns and 'month' in train_fe.columns and target_col in train_fe.columns:
+        train_fe['avg_sales_store_month'] = train_fe.groupby(['store_nbr', 'month'])[target_col].transform('mean')
+        if 'store_nbr' in test_fe.columns and 'month' in test_fe.columns:
+            store_month_means = train_fe.groupby(['store_nbr', 'month'])[target_col].mean().to_dict()
+            test_fe['avg_sales_store_month'] = test_fe.apply(
+                lambda x: store_month_means.get((x['store_nbr'], x['month']), train_fe[target_col].mean()), axis=1
+            )
+
+    # Binary encoding
+    for df in [train_fe, test_fe]:
+        if 'description' in df.columns:
+            df['is_holiday'] = df['description'].str.contains('Holiday|Navidad', case=False, na=False).astype(int)
+        for col in ['transferred', 'is_weekend', 'is_holiday']:
+            if col in df.columns:
+                df[col] = df[col].astype(int)
+
+    # Ordinal encoding
+    locale_order = {'National': 2, 'Regional': 1, 'Local': 0}
+    type_y_order = {'Holiday': 2, 'Event': 1, 'Bridge': 0}
+    for df in [train_fe, test_fe]:
+        if 'locale' in df.columns:
+            df['locale_encoded'] = df['locale'].map(locale_order).fillna(0)
+        if 'type_y' in df.columns:
+            df['type_y_encoded'] = df['type_y'].map(type_y_order).fillna(0)
+
+    # Binning
+    if 'dcoilwtico' in train_fe.columns:
+        q25 = train_fe['dcoilwtico'].quantile(0.25)
+        q75 = train_fe['dcoilwtico'].quantile(0.75)
+        if q25 == q75:
+            bins = [-np.inf, q25, np.inf]
+            labels = ['low', 'high']
+        else:
+            bins = [-np.inf, q25, q75, np.inf]
+            labels = ['low', 'medium', 'high']
+        train_fe['dcoilwtico_bin'] = pd.cut(train_fe['dcoilwtico'], bins=bins, labels=labels)
+        if 'dcoilwtico' in test_fe.columns:
+            test_fe['dcoilwtico_bin'] = pd.cut(test_fe['dcoilwtico'], bins=bins, labels=labels)
+
+    return train_fe, test_fe
+
+def get_download_file(df, filename, format_type):
+    """Generate downloadable file. Assigned to: Mohamed Samy"""
+    if format_type == 'CSV':
+        buffer = BytesIO()
+        df.to_csv(buffer, index=False)
+        buffer.seek(0)
+        return buffer.getvalue(), 'text/csv'
+    elif format_type == 'Parquet':
+        buffer = BytesIO()
+        df.to_parquet(buffer, index=False)
+        buffer.seek(0)
+        return buffer.getvalue(), 'application/octet-stream'
+    return None, None
 
 def main():
     st.divider()
     with st.expander("ℹ️ Project Info"):
-        st.write("**Objective**: Collect, explore, and preprocess historical sales data for analysis.")
-        st.write("**Team**:")
-        st.write("- Belal Khamis: Missing Values, EDA")
+        st.markdown("**Objective**: Collect, explore, and preprocess historical sales data for analysis.")
+        st.markdown("**Tasks**:")
+        st.write("- **Data Collection**: Acquire historical sales dataset with features like sales, date, promotions, holidays.")
+        st.write("- **Data Exploration**: Perform EDA for trends, seasonality, missing values, outliers, and patterns.")
+        st.write("- **Data Preprocessing**: Handle missing values, duplicates, inconsistencies, add time features, and normalize data.")
+        st.write("- **Feature Engineering**: Add interaction terms, mean/frequency encoding, binning, and more.")
+        st.markdown("**Team**:")
+        st.write("- Belal Khamis: Notebook outlines, Missing Values, EDA")
         st.write("- Marwa Kotb: Duplicates")
         st.write("- Mahmoud Sabry: Outliers")
-        st.write("- Mohamed Samy: Standardization, Time Features, Normalization")
-        st.write("- Hoda Magdy: Inconsistencies")
+        st.write("- Mohamed Samy: Standardization, Time Features, Normalization, Feature Engineering")
+        st.write("- Hoda Magdy: Typos and Inconsistencies")
 
     # Tabs for Train and Test
     train_tab, test_tab = st.tabs(["Train Data", "Test Data"])
@@ -227,6 +395,7 @@ def main():
                     with st.form("train_config"):
                         train_date_col = st.selectbox("Date Column", ['None'] + list(train_df.columns), index=0)
                         train_date_col = None if train_date_col == 'None' else train_date_col
+                        train_target_col = st.selectbox("Target Column", train_df.columns, index=train_df.columns.tolist().index('sales') if 'sales' in train_df.columns else 0)
                         train_numeric_cols, train_categorical_cols = detect_column_types(train_df, train_date_col)
 
                         with st.expander("Adjust Column Types"):
@@ -243,27 +412,40 @@ def main():
                                 if new_type != 'Keep as is':
                                     train_type_changes[col] = new_type.lower()
 
-                        st.form_submit_button("Apply Types", on_click=lambda: st.session_state.update({
-                            'train_df': apply_column_type_changes(st.session_state['train_df'], train_type_changes, train_date_col)[0],
-                            'train_numeric_cols': apply_column_type_changes(st.session_state['train_df'], train_type_changes, train_date_col)[1],
-                            'train_categorical_cols': apply_column_type_changes(st.session_state['train_df'], train_type_changes, team_date_col)[2],
-                            'train_date_col': apply_column_type_changes(st.session_state['train_df'], train_type_changes, train_date_col)[3]
+                        train_outlier_method = st.selectbox("Outliers", ['None', 'Remove', 'Replace with Median'], key="train_outliers")
+                        train_outlier_method = train_outlier_method.lower() if train_outlier_method != 'None' else None
+                        train_normalize = st.checkbox("Normalize Numerics")
+                        train_save_format = st.selectbox("Download As", ['CSV', 'Parquet'], key="train_save")
+                        st.form_submit_button("Apply Configuration", on_click=lambda: st.session_state.update({
+                            'train_date_col': train_date_col,
+                            'train_target_col': train_target_col,
+                            'train_numeric_cols': apply_column_type_changes(train_df, train_type_changes, train_date_col)[1],
+                            'train_categorical_cols': apply_column_type_changes(train_df, train_type_changes, train_date_col)[2],
+                            'train_date_col': apply_column_type_changes(train_df, train_type_changes, train_date_col)[3],
+                            'train_type_changes': train_type_changes,
+                            'train_outlier_method': train_outlier_method,
+                            'train_normalize': train_normalize,
+                            'train_save_format': train_save_format
                         }))
 
                     # Exploration and Preprocessing
                     with st.form("train_process"):
                         st.markdown("**Process Train Data**")
-                        train_outlier_method = st.selectbox("Outliers", ['None', 'Remove', 'Replace with Median'], key="train_outliers")
-                        train_outlier_method = train_outlier_method.lower() if train_outlier_method != 'None' else None
-                        train_normalize = st.checkbox("Normalize Numerics")
-                        save_format = st.selectbox("Save As", ['CSV', 'Parquet'], key="train_save")
-                        submitted = st.form_submit_button("Explore & Preprocess")
+                        submitted = st.form_submit_button("Explore, Preprocess & Engineer Features")
 
                         if submitted:
                             train_df = st.session_state['train_df']
+                            train_date_col = st.session_state.get('train_date_col', None)
+                            train_target_col = st.session_state.get('train_target_col', 'sales')
                             train_numeric_cols = st.session_state.get('train_numeric_cols', detect_column_types(train_df, train_date_col)[0])
                             train_categorical_cols = st.session_state.get('train_categorical_cols', detect_column_types(train_df, train_date_col)[1])
-                            train_date_col = st.session_state.get('train_date_col', train_date_col)
+                            train_type_changes = st.session_state.get('train_type_changes', {})
+                            train_outlier_method = st.session_state.get('train_outlier_method', None)
+                            train_normalize = st.session_state.get('train_normalize', False)
+                            train_save_format = st.session_state.get('train_save_format', 'CSV')
+
+                            # Apply type changes
+                            train_df = apply_column_type_changes(train_df, train_type_changes, train_date_col)[0]
 
                             # Exploration
                             explore_data(train_df, train_date_col, train_numeric_cols, train_categorical_cols, "train")
@@ -277,16 +459,35 @@ def main():
                             st.write(f"**Processed**: {duplicates_removed} duplicates removed, {processed_train.shape[0]} rows remain")
                             st.dataframe(processed_train.head(), height=150)
 
-                            # Save
-                            output_path = os.path.join("data", f"processed_train_{train_file.name.split('.')[0]}.{save_format.lower()}")
-                            if save_format == 'CSV':
-                                processed_train.to_csv(output_path, index=False)
-                            else:
-                                processed_train.to_parquet(output_path, index=False)
-                            st.success(f"Saved to {output_path}")
-                            os.system(f"dvc add {output_path}")
-                            os.system(f"git add {output_path}.dvc")
-                            os.system('git commit -m "Add processed train dataset to DVC"')
+                            # Feature Engineering
+                            if 'test_df' in st.session_state:
+                                train_fe, _ = engineer_features(
+                                    processed_train, st.session_state['processed_test'],
+                                    train_numeric_cols, train_categorical_cols, train_target_col
+                                )
+                                st.session_state['train_fe'] = train_fe
+                                st.markdown("**Feature Engineered Train Data**")
+                                st.dataframe(train_fe.head(), height=150)
+
+                                # Save locally
+                                output_path = os.path.join("data", f"train_m1.{train_save_format.lower()}")
+                                if train_save_format == 'CSV':
+                                    train_fe.to_csv(output_path, index=False)
+                                else:
+                                    train_fe.to_parquet(output_path, index=False)
+                                st.success(f"Saved to {output_path}")
+                                os.system(f"dvc add {output_path}")
+                                os.system(f"git add {output_path}.dvc")
+                                os.system('git commit -m "Add processed train dataset to DVC"')
+
+                                # Download button
+                                file_data, mime_type = get_download_file(train_fe, f"train_m1.{train_save_format.lower()}", train_save_format)
+                                st.download_button(
+                                    label=f"Download Train Data ({train_save_format})",
+                                    data=file_data,
+                                    file_name=f"train_m1.{train_save_format.lower()}",
+                                    mime=mime_type
+                                )
 
     with test_tab:
         with st.container():
@@ -318,27 +519,38 @@ def main():
                                 if new_type != 'Keep as is':
                                     test_type_changes[col] = new_type.lower()
 
-                        st.form_submit_button("Apply Types", on_click=lambda: st.session_state.update({
-                            'test_df': apply_column_type_changes(st.session_state['test_df'], test_type_changes, test_date_col)[0],
-                            'test_numeric_cols': apply_column_type_changes(st.session_state['test_df'], test_type_changes, test_date_col)[1],
-                            'test_categorical_cols': apply_column_type_changes(st.session_state['test_df'], test_type_changes, test_date_col)[2],
-                            'test_date_col': apply_column_type_changes(st.session_state['test_df'], test_type_changes, test_date_col)[3]
+                        test_outlier_method = st.selectbox("Outliers", ['None', 'Remove', 'Replace with Median'], key="test_outliers")
+                        test_outlier_method = test_outlier_method.lower() if test_outlier_method != 'None' else None
+                        test_normalize = st.checkbox("Normalize Numerics")
+                        test_save_format = st.selectbox("Download As", ['CSV', 'Parquet'], key="test_save")
+                        st.form_submit_button("Apply Configuration", on_click=lambda: st.session_state.update({
+                            'test_date_col': test_date_col,
+                            'test_numeric_cols': apply_column_type_changes(test_df, test_type_changes, test_date_col)[1],
+                            'test_categorical_cols': apply_column_type_changes(test_df, test_type_changes, test_date_col)[2],
+                            'test_date_col': apply_column_type_changes(test_df, test_type_changes, test_date_col)[3],
+                            'test_type_changes': test_type_changes,
+                            'test_outlier_method': test_outlier_method,
+                            'test_normalize': test_normalize,
+                            'test_save_format': test_save_format
                         }))
 
                     # Exploration and Preprocessing
                     with st.form("test_process"):
                         st.markdown("**Process Test Data**")
-                        test_outlier_method = st.selectbox("Outliers", ['None', 'Remove', 'Replace with Median'], key="test_outliers")
-                        test_outlier_method = test_outlier_method.lower() if test_outlier_method != 'None' else None
-                        test_normalize = st.checkbox("Normalize Numerics")
-                        save_format = st.selectbox("Save As", ['CSV', 'Parquet'], key="test_save")
-                        submitted = st.form_submit_button("Explore & Preprocess")
+                        submitted = st.form_submit_button("Explore, Preprocess & Engineer Features")
 
                         if submitted:
                             test_df = st.session_state['test_df']
+                            test_date_col = st.session_state.get('test_date_col', None)
                             test_numeric_cols = st.session_state.get('test_numeric_cols', detect_column_types(test_df, test_date_col)[0])
                             test_categorical_cols = st.session_state.get('test_categorical_cols', detect_column_types(test_df, test_date_col)[1])
-                            test_date_col = st.session_state.get('test_date_col', test_date_col)
+                            test_type_changes = st.session_state.get('test_type_changes', {})
+                            test_outlier_method = st.session_state.get('test_outlier_method', None)
+                            test_normalize = st.session_state.get('test_normalize', False)
+                            test_save_format = st.session_state.get('test_save_format', 'CSV')
+
+                            # Apply type changes
+                            test_df = apply_column_type_changes(test_df, test_type_changes, test_date_col)[0]
 
                             # Exploration
                             explore_data(test_df, test_date_col, test_numeric_cols, test_categorical_cols, "test")
@@ -352,17 +564,38 @@ def main():
                             st.write(f"**Processed**: {duplicates_removed} duplicates removed, {processed_test.shape[0]} rows remain")
                             st.dataframe(processed_test.head(), height=150)
 
-                            # Save
-                            output_path = os.path.join("data", f"processed_test_{test_file.name.split('.')[0]}.{save_format.lower()}")
-                            if save_format == 'CSV':
-                                processed_test.to_csv(output_path, index=False)
-                            else:
-                                processed_test.to_parquet(output_path, index=False)
-                            st.success(f"Saved to {output_path}")
-                            os.system(f"dvc add {output_path}")
-                            os.system(f"git add {output_path}.dvc")
-                            os.system('git commit -m "Add processed test dataset to DVC"')
-    
+                            # Feature Engineering
+                            if 'processed_train' in st.session_state:
+                                _, test_fe = engineer_features(
+                                    st.session_state['processed_train'], processed_test,
+                                    st.session_state.get('train_numeric_cols', test_numeric_cols),
+                                    st.session_state.get('train_categorical_cols', test_categorical_cols),
+                                    st.session_state.get('train_target_col', 'sales')
+                                )
+                                st.session_state['test_fe'] = test_fe
+                                st.markdown("**Feature Engineered Test Data**")
+                                st.dataframe(test_fe.head(), height=150)
+
+                                # Save locally
+                                output_path = os.path.join("data", f"test_m1.{test_save_format.lower()}")
+                                if test_save_format == 'CSV':
+                                    test_fe.to_csv(output_path, index=False)
+                                else:
+                                    test_fe.to_parquet(output_path, index=False)
+                                st.success(f"Saved to {output_path}")
+                                os.system(f"dvc add {output_path}")
+                                os.system(f"git add {output_path}.dvc")
+                                os.system('git commit -m "Add processed test dataset to DVC"')
+
+                                # Download button
+                                file_data, mime_type = get_download_file(test_fe, f"test_m1.{test_save_format.lower()}", test_save_format)
+                                st.download_button(
+                                    label=f"Download Test Data ({test_save_format})",
+                                    data=file_data,
+                                    file_name=f"test_m1.{test_save_format.lower()}",
+                                    mime=mime_type
+                                )
+
     st.divider()
     st.markdown("**Created with Belal Khamis, All Rights Reserved**")
 
