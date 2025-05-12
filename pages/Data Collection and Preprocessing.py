@@ -10,22 +10,6 @@ from sklearn.preprocessing import MinMaxScaler
 import os
 import uuid
 
-# Custom CSS for visual appeal
-st.markdown("""
-<style>
-    .main { background-color: #f9fafb; padding: 20px; }
-    .stButton>button {
-        background-color: #2E86C1; color: white; border-radius: 8px; padding: 8px 16px;
-        border: none; transition: all 0.3s; }
-    .stButton>button:hover { background-color: #1b6ca8; }
-    .stSelectbox, .stCheckbox { background-color: white; border-radius: 8px; padding: 10px; }
-    .card { background-color: white; border-radius: 12px; padding: 15px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-bottom: 20px; }
-    h1, h2, h3 { color: #2E86C1; font-family: 'Roboto', sans-serif; }
-    hr { border: 1px solid #e5e7eb; margin: 20px 0; }
-    .stTabs [data-baseweb="tab"] { font-size: 16px; padding: 10px 20px; }
-</style>
-""", unsafe_allow_html=True)
-
 st.set_page_config(page_title="Milestone 1", layout="wide")
 st.markdown("<h1 style='text-align: center;'>Data Collection & Preprocessing</h1>", unsafe_allow_html=True)
 
@@ -85,7 +69,7 @@ def apply_column_type_changes(df, type_changes, date_col=None):
 def explore_data(df, date_col=None, numeric_cols=None, categorical_cols=None, dataset_type="train"):
     """EDA: trends, seasonality, outliers. Assigned to: Belal Khamis"""
     with st.container():
-        st.markdown(f"<div class='card'><h3>{dataset_type.capitalize()} Data Insights</h3>", unsafe_allow_html=True)
+        st.markdown(f"### {dataset_type.capitalize()} Data Insights")
         col1, col2 = st.columns(2)
         with col1:
             st.write("**Shape**:", df.shape)
@@ -151,7 +135,6 @@ def explore_data(df, date_col=None, numeric_cols=None, categorical_cols=None, da
                     z_scores = zscore(df[col].dropna()) if df[col].std() > 1e-6 else []
                     outliers_zscore = df[abs(z_scores) > 3][col] if z_scores else pd.Series(dtype=df[col].dtype)
                     st.write(f"{col}: IQR Outliers = {len(outliers_iqr)}, Z-score Outliers = {len(outliers_zscore)}")
-        st.markdown("</div>", unsafe_allow_html=True)
 
 def preprocess_data(df, numeric_cols=None, categorical_cols=None, date_col=None, handle_outliers='remove', normalize=False, dataset_type="train"):
     """Preprocess data. Assigned to: Belal Khamis, Marwa Kotb, Mahmoud Sabry, Mohamed Samy, Hoda Magdy"""
@@ -213,7 +196,7 @@ def preprocess_data(df, numeric_cols=None, categorical_cols=None, date_col=None,
     return df_clean, initial_rows - df_clean.shape[0]
 
 def main():
-    st.markdown("<hr>", unsafe_allow_html=True)
+    st.divider()
     with st.expander("ℹ️ Project Info"):
         st.write("**Objective**: Collect, explore, and preprocess historical sales data for analysis.")
         st.write("**Team**:")
@@ -227,156 +210,154 @@ def main():
     train_tab, test_tab = st.tabs(["Train Data", "Test Data"])
 
     with train_tab:
-        st.markdown("<div class='card'>", unsafe_allow_html=True)
-        train_file = st.file_uploader("Upload Train Data", type=['csv', 'parquet'], key="train")
-        if train_file:
-            train_df = load_data(train_file, "train")
-            if train_df is not None:
-                st.session_state['train_df'] = train_df
-                st.write("**Preview**:")
-                st.dataframe(train_df.head(), height=150)
+        with st.container():
+            train_file = st.file_uploader("Upload Train Data", type=['csv', 'parquet'], key="train")
+            if train_file:
+                train_df = load_data(train_file, "train")
+                if train_df is not None:
+                    st.session_state['train_df'] = train_df
+                    st.write("**Preview**:")
+                    st.dataframe(train_df.head(), height=150)
 
-                # Configuration
-                with st.form("train_config"):
-                    train_date_col = st.selectbox("Date Column", ['None'] + list(train_df.columns), index=0)
-                    train_date_col = None if train_date_col == 'None' else train_date_col
-                    train_numeric_cols, train_categorical_cols = detect_column_types(train_df, train_date_col)
+                    # Configuration
+                    with st.form("train_config"):
+                        train_date_col = st.selectbox("Date Column", ['None'] + list(train_df.columns), index=0)
+                        train_date_col = None if train_date_col == 'None' else train_date_col
+                        train_numeric_cols, train_categorical_cols = detect_column_types(train_df, train_date_col)
 
-                    with st.expander("Adjust Column Types"):
-                        train_type_changes = {}
-                        for col in train_df.columns:
-                            if col == train_date_col:
-                                continue
-                            current_type = 'numeric' if col in train_numeric_cols else 'categorical' if col in train_categorical_cols else 'other'
-                            new_type = st.selectbox(
-                                f"{col} (current: {current_type})",
-                                ['Keep as is', 'Numeric', 'Categorical', 'Date'],
-                                key=f"train_type_{col}_{uuid.uuid4()}"
+                        with st.expander("Adjust Column Types"):
+                            train_type_changes = {}
+                            for col in train_df.columns:
+                                if col == train_date_col:
+                                    continue
+                                current_type = 'numeric' if col in train_numeric_cols else 'categorical' if col in train_categorical_cols else 'other'
+                                new_type = st.selectbox(
+                                    f"{col} (current: {current_type})",
+                                    ['Keep as is', 'Numeric', 'Categorical', 'Date'],
+                                    key=f"train_type_{col}_{uuid.uuid4()}"
+                                )
+                                if new_type != 'Keep as is':
+                                    train_type_changes[col] = new_type.lower()
+
+                        st.form_submit_button("Apply Types", on_click=lambda: st.session_state.update({
+                            'train_df': apply_column_type_changes(st.session_state['train_df'], train_type_changes, train_date_col)[0],
+                            'train_numeric_cols': apply_column_type_changes(st.session_state['train_df'], train_type_changes, train_date_col)[1],
+                            'train_categorical_cols': apply_column_type_changes(st.session_state['train_df'], train_type_changes, train_date_col)[2],
+                            'train_date_col': apply_column_type_changes(st.session_state['train_df'], train_type_changes, train_date_col)[3]
+                        }))
+
+                    # Exploration and Preprocessing
+                    with st.form("train_process"):
+                        st.markdown("**Process Train Data**")
+                        train_outlier_method = st.selectbox("Outliers", ['None', 'Remove', 'Replace with Median'], key="train_outliers")
+                        train_outlier_method = train_outlier_method.lower() if train_outlier_method != 'None' else None
+                        train_normalize = st.checkbox("Normalize Numerics")
+                        save_format = st.selectbox("Save As", ['CSV', 'Parquet'], key="train_save")
+                        submitted = st.form_submit_button("Explore & Preprocess")
+
+                        if submitted:
+                            train_df = st.session_state['train_df']
+                            train_numeric_cols = st.session_state.get('train_numeric_cols', detect_column_types(train_df, train_date_col)[0])
+                            train_categorical_cols = st.session_state.get('train_categorical_cols', detect_column_types(train_df, train_date_col)[1])
+                            train_date_col = st.session_state.get('train_date_col', train_date_col)
+
+                            # Exploration
+                            explore_data(train_df, train_date_col, train_numeric_cols, train_categorical_cols, "train")
+
+                            # Preprocessing
+                            processed_train, duplicates_removed = preprocess_data(
+                                train_df, train_numeric_cols, train_categorical_cols, train_date_col,
+                                train_outlier_method, train_normalize, "train"
                             )
-                            if new_type != 'Keep as is':
-                                train_type_changes[col] = new_type.lower()
+                            st.session_state['processed_train'] = processed_train
+                            st.write(f"**Processed**: {duplicates_removed} duplicates removed, {processed_train.shape[0]} rows remain")
+                            st.dataframe(processed_train.head(), height=150)
 
-                    st.form_submit_button("Apply Types", on_click=lambda: st.session_state.update({
-                        'train_df': apply_column_type_changes(st.session_state['train_df'], train_type_changes, train_date_col)[0],
-                        'train_numeric_cols': apply_column_type_changes(st.session_state['train_df'], train_type_changes, train_date_col)[1],
-                        'train_categorical_cols': apply_column_type_changes(st.session_state['train_df'], train_type_changes, train_date_col)[2],
-                        'train_date_col': apply_column_type_changes(st.session_state['train_df'], train_type_changes, train_date_col)[3]
-                    }))
-
-                # Exploration and Preprocessing
-                with st.form("train_process"):
-                    st.markdown("**Process Train Data**")
-                    train_outlier_method = st.selectbox("Outliers", ['None', 'Remove', 'Replace with Median'], key="train_outliers")
-                    train_outlier_method = train_outlier_method.lower() if train_outlier_method != 'None' else None
-                    train_normalize = st.checkbox("Normalize Numerics")
-                    save_format = st.selectbox("Save As", ['CSV', 'Parquet'], key="train_save")
-                    submitted = st.form_submit_button("Explore & Preprocess")
-
-                    if submitted:
-                        train_df = st.session_state['train_df']
-                        train_numeric_cols = st.session_state.get('train_numeric_cols', detect_column_types(train_df, train_date_col)[0])
-                        train_categorical_cols = st.session_state.get('train_categorical_cols', detect_column_types(train_df, train_date_col)[1])
-                        train_date_col = st.session_state.get('train_date_col', train_date_col)
-
-                        # Exploration
-                        explore_data(train_df, train_date_col, train_numeric_cols, train_categorical_cols, "train")
-
-                        # Preprocessing
-                        processed_train, duplicates_removed = preprocess_data(
-                            train_df, train_numeric_cols, train_categorical_cols, train_date_col,
-                            train_outlier_method, train_normalize, "train"
-                        )
-                        st.session_state['processed_train'] = processed_train
-                        st.write(f"**Processed**: {duplicates_removed} duplicates removed, {processed_train.shape[0]} rows remain")
-                        st.dataframe(processed_train.head(), height=150)
-
-                        # Save
-                        output_path = os.path.join("data", f"processed_train_{train_file.name.split('.')[0]}.{save_format.lower()}")
-                        if save_format == 'CSV':
-                            processed_train.to_csv(output_path, index=False)
-                        else:
-                            processed_train.to_parquet(output_path, index=False)
-                        st.success(f"Saved to {output_path}")
-                        os.system(f"dvc add {output_path}")
-                        os.system(f"git add {output_path}.dvc")
-                        os.system('git commit -m "Add processed train dataset to DVC"')
-        st.markdown("</div>", unsafe_allow_html=True)
+                            # Save
+                            output_path = os.path.join("data", f"processed_train_{train_file.name.split('.')[0]}.{save_format.lower()}")
+                            if save_format == 'CSV':
+                                processed_train.to_csv(output_path, index=False)
+                            else:
+                                processed_train.to_parquet(output_path, index=False)
+                            st.success(f"Saved to {output_path}")
+                            os.system(f"dvc add {output_path}")
+                            os.system(f"git add {output_path}.dvc")
+                            os.system('git commit -m "Add processed train dataset to DVC"')
 
     with test_tab:
-        st.markdown("<div class='card'>", unsafe_allow_html=True)
-        test_file = st.file_uploader("Upload Test Data", type=['csv', 'parquet'], key="test")
-        if test_file:
-            test_df = load_data(test_file, "test")
-            if test_df is not None:
-                st.session_state['test_df'] = test_df
-                st.write("**Preview**:")
-                st.dataframe(test_df.head(), height=150)
+        with st.container():
+            test_file = st.file_uploader("Upload Test Data", type=['csv', 'parquet'], key="test")
+            if test_file:
+                test_df = load_data(test_file, "test")
+                if test_df is not None:
+                    st.session_state['test_df'] = test_df
+                    st.write("**Preview**:")
+                    st.dataframe(test_df.head(), height=150)
 
-                # Configuration
-                with st.form("test_config"):
-                    test_date_col = st.selectbox("Date Column", ['None'] + list(test_df.columns), index=0)
-                    test_date_col = None if test_date_col == 'None' else test_date_col
-                    test_numeric_cols, test_categorical_cols = detect_column_types(test_df, test_date_col)
+                    # Configuration
+                    with st.form("test_config"):
+                        test_date_col = st.selectbox("Date Column", ['None'] + list(test_df.columns), index=0)
+                        test_date_col = None if test_date_col == 'None' else test_date_col
+                        test_numeric_cols, test_categorical_cols = detect_column_types(test_df, test_date_col)
 
-                    with st.expander("Adjust Column Types"):
-                        test_type_changes = {}
-                        for col in test_df.columns:
-                            if col == test_date_col:
-                                continue
-                            current_type = 'numeric' if col in test_numeric_cols else 'categorical' if col in test_categorical_cols else 'other'
-                            new_type = st.selectbox(
-                                f"{col} (current: {current_type})",
-                                ['Keep as is', 'Numeric', 'Categorical', 'Date'],
-                                key=f"test_type_{col}_{uuid.uuid4()}"
+                        with st.expander("Adjust Column Types"):
+                            test_type_changes = {}
+                            for col in test_df.columns:
+                                if col == test_date_col:
+                                    continue
+                                current_type = 'numeric' if col in test_numeric_cols else 'categorical' if col in test_categorical_cols else 'other'
+                                new_type = st.selectbox(
+                                    f"{col} (current: {current_type})",
+                                    ['Keep as is', 'Numeric', 'Categorical', 'Date'],
+                                    key=f"test_type_{col}_{uuid.uuid4()}"
+                                )
+                                if new_type != 'Keep as is':
+                                    test_type_changes[col] = new_type.lower()
+
+                        st.form_submit_button("Apply Types", on_click=lambda: st.session_state.update({
+                            'test_df': apply_column_type_changes(st.session_state['test_df'], test_type_changes, test_date_col)[0],
+                            'test_numeric_cols': apply_column_type_changes(st.session_state['test_df'], test_type_changes, test_date_col)[1],
+                            'test_categorical_cols': apply_column_type_changes(st.session_state['test_df'], test_type_changes, test_date_col)[2],
+                            'test_date_col': apply_column_type_changes(st.session_state['test_df'], test_type_changes, test_date_col)[3]
+                        }))
+
+                    # Exploration and Preprocessing
+                    with st.form("test_process"):
+                        st.markdown("**Process Test Data**")
+                        test_outlier_method = st.selectbox("Outliers", ['None', 'Remove', 'Replace with Median'], key="test_outliers")
+                        test_outlier_method = test_outlier_method.lower() if test_outlier_method != 'None' else None
+                        test_normalize = st.checkbox("Normalize Numerics")
+                        save_format = st.selectbox("Save As", ['CSV', 'Parquet'], key="test_save")
+                        submitted = st.form_submit_button("Explore & Preprocess")
+
+                        if submitted:
+                            test_df = st.session_state['test_df']
+                            test_numeric_cols = st.session_state.get('test_numeric_cols', detect_column_types(test_df, test_date_col)[0])
+                            test_categorical_cols = st.session_state.get('test_categorical_cols', detect_column_types(test_df, test_date_col)[1])
+                            test_date_col = st.session_state.get('test_date_col', test_date_col)
+
+                            # Exploration
+                            explore_data(test_df, test_date_col, test_numeric_cols, test_categorical_cols, "test")
+
+                            # Preprocessing
+                            processed_test, duplicates_removed = preprocess_data(
+                                test_df, test_numeric_cols, test_categorical_cols, test_date_col,
+                                test_outlier_method, test_normalize, "test"
                             )
-                            if new_type != 'Keep as is':
-                                test_type_changes[col] = new_type.lower()
+                            st.session_state['processed_test'] = processed_test
+                            st.write(f"**Processed**: {duplicates_removed} duplicates removed, {processed_test.shape[0]} rows remain")
+                            st.dataframe(processed_test.head(), height=150)
 
-                    st.form_submit_button("Apply Types", on_click=lambda: st.session_state.update({
-                        'test_df': apply_column_type_changes(st.session_state['test_df'], test_type_changes, test_date_col)[0],
-                        'test_numeric_cols': apply_column_type_changes(st.session_state['test_df'], test_type_changes, test_date_col)[1],
-                        'test_categorical_cols': apply_column_type_changes(st.session_state['test_df'], test_type_changes, test_date_col)[2],
-                        'test_date_col': apply_column_type_changes(st.session_state['test_df'], test_type_changes, test_date_col)[3]
-                    }))
-
-                # Exploration and Preprocessing
-                with st.form("test_process"):
-                    st.markdown("**Process Test Data**")
-                    test_outlier_method = st.selectbox("Outliers", ['None', 'Remove', 'Replace with Median'], key="test_outliers")
-                    test_outlier_method = test_outlier_method.lower() if test_outlier_method != 'None' else None
-                    test_normalize = st.checkbox("Normalize Numerics")
-                    save_format = st.selectbox("Save As", ['CSV', 'Parquet'], key="test_save")
-                    submitted = st.form_submit_button("Explore & Preprocess")
-
-                    if submitted:
-                        test_df = st.session_state['test_df']
-                        test_numeric_cols = st.session_state.get('test_numeric_cols', detect_column_types(test_df, test_date_col)[0])
-                        test_categorical_cols = st.session_state.get('test_categorical_cols', detect_column_types(test_df, test_date_col)[1])
-                        test_date_col = st.session_state.get('test_date_col', test_date_col)
-
-                        # Exploration
-                        explore_data(test_df, test_date_col, test_numeric_cols, test_categorical_cols, "test")
-
-                        # Preprocessing
-                        processed_test, duplicates_removed = preprocess_data(
-                            test_df, test_numeric_cols, test_categorical_cols, test_date_col,
-                            test_outlier_method, test_normalize, "test"
-                        )
-                        st.session_state['processed_test'] = processed_test
-                        st.write(f"**Processed**: {duplicates_removed} duplicates removed, {processed_test.shape[0]} rows remain")
-                        st.dataframe(processed_test.head(), height=150)
-
-                        # Save
-                        output_path = os.path.join("data", f"processed_test_{test_file.name.split('.')[0]}.{save_format.lower()}")
-                        if save_format == 'CSV':
-                            processed_test.to_csv(output_path, index=False)
-                        else:
-                            processed_test.to_parquet(output_path, index=False)
-                        st.success(f"Saved to {output_path}")
-                        os.system(f"dvc add {output_path}")
-                        os.system(f"git add {output_path}.dvc")
-                        os.system('git commit -m "Add processed test dataset to DVC"')
-        st.markdown("</div>", unsafe_allow_html=True)
+                            # Save
+                            output_path = os.path.join("data", f"processed_test_{test_file.name.split('.')[0]}.{save_format.lower()}")
+                            if save_format == 'CSV':
+                                processed_test.to_csv(output_path, index=False)
+                            else:
+                                processed_test.to_parquet(output_path, index=False)
+                            st.success(f"Saved to {output_path}")
+                            os.system(f"dvc add {output_path}")
+                            os.system(f"git add {output_path}.dvc")
+                            os.system('git commit -m "Add processed test dataset to DVC"')
 
 if __name__ == "__main__":
     main()
