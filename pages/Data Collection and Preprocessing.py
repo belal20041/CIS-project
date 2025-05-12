@@ -132,8 +132,12 @@ def explore_data(df, date_col=None, numeric_cols=None, categorical_cols=None, da
                     lower_bound = Q1 - 1.5 * IQR
                     upper_bound = Q3 + 1.5 * IQR
                     outliers_iqr = df[(df[col] < lower_bound) | (df[col] > upper_bound)][col]
-                    z_scores = zscore(df[col].dropna()) if df[col].std() > 1e-6 else []
-                    outliers_zscore = df[abs(z_scores) > 3][col] if z_scores else pd.Series(dtype=df[col].dtype)
+                    col_data = df[col].dropna()
+                    if col_data.std() > 1e-6 and len(col_data) > 0:
+                        z_scores = zscore(col_data)
+                        outliers_zscore = df.loc[col_data.index][abs(z_scores) > 3][col]
+                    else:
+                        outliers_zscore = pd.Series(dtype=df[col].dtype)
                     st.write(f"{col}: IQR Outliers = {len(outliers_iqr)}, Z-score Outliers = {len(outliers_zscore)}")
 
 def preprocess_data(df, numeric_cols=None, categorical_cols=None, date_col=None, handle_outliers='remove', normalize=False, dataset_type="train"):
@@ -242,7 +246,7 @@ def main():
                         st.form_submit_button("Apply Types", on_click=lambda: st.session_state.update({
                             'train_df': apply_column_type_changes(st.session_state['train_df'], train_type_changes, train_date_col)[0],
                             'train_numeric_cols': apply_column_type_changes(st.session_state['train_df'], train_type_changes, train_date_col)[1],
-                            'train_categorical_cols': apply_column_type_changes(st.session_state['train_df'], train_type_changes, train_date_col)[2],
+                            'train_categorical_cols': apply_column_type_changes(st.session_state['train_df'], train_type_changes, team_date_col)[2],
                             'train_date_col': apply_column_type_changes(st.session_state['train_df'], train_type_changes, train_date_col)[3]
                         }))
 
@@ -358,6 +362,9 @@ def main():
                             os.system(f"dvc add {output_path}")
                             os.system(f"git add {output_path}.dvc")
                             os.system('git commit -m "Add processed test dataset to DVC"')
+    
+    st.divider()
+    st.markdown("**Created with Belal Khamis, All Rights Reserved**")
 
 if __name__ == "__main__":
     main()
