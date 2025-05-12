@@ -9,20 +9,28 @@ from scipy.stats import zscore
 from sklearn.preprocessing import StandardScaler
 import os
 import uuid
+import requests
+from io import StringIO
 
 st.set_page_config(page_title="Milestone 1: Data Collection, Exploration, Preprocessing", layout="wide")
 st.markdown("<h1 style='text-align: center;'>Milestone 1: Data Collection, Exploration, Preprocessing</h1>", unsafe_allow_html=True)
 
-def load_data(file, dataset_type="train"):
-    """Load dataset. Assigned to: Mohamed Samy (Standardization)"""
-    if file.name.endswith('.csv'):
-        df = pd.read_csv(file)
-    else:
-        st.error("Unsupported format. Use CSV.")
+def load_data_from_github(dataset_type="train"):
+    """Load preprocessed dataset from GitHub. Assigned to: Mohamed Samy (Standardization)"""
+    try:
+        if dataset_type == "train":
+            url = "https://raw.githubusercontent.com/CIS-project/data/main/processed_train_Train.csv"
+        else:
+            url = "https://raw.githubusercontent.com/CIS-project/data/main/processed_test_Test.csv"
+        response = requests.get(url)
+        response.raise_for_status()
+        df = pd.read_csv(StringIO(response.text))
+        df = df.loc[:, ~df.columns.str.contains('^unnamed')]  # Hoda Magdy: Fix inconsistencies
+        df.columns = df.columns.str.lower().str.strip().str.replace(" ", "_")  # Standardize names
+        return df
+    except Exception as e:
+        st.error(f"Failed to load {dataset_type} data from GitHub: {str(e)}")
         return None
-    df = df.loc[:, ~df.columns.str.contains('^unnamed')]  # Hoda Magdy: Fix inconsistencies
-    df.columns = df.columns.str.lower().str.strip().str.replace(" ", "_")  # Standardize names
-    return df
 
 def detect_column_types(df, date_col=None):
     """Detect column types. Assigned to: Mohamed Samy"""
@@ -205,7 +213,7 @@ def preprocess_data(df, numeric_cols=None, categorical_cols=None, date_col=None,
                     )
 
     # Time features. Assigned to: Mohamed Samy
-    if date_col and date_col in df_clean.columns:
+    if date_col and date_col in df_clean.columns and 'year' not in df_clean.columns:  # Skip if already present
         try:
             df_clean[date_col] = pd.to_datetime(df_clean[date_col], errors='coerce')
             df_clean['year'] = df_clean[date_col].dt.year
@@ -213,7 +221,7 @@ def preprocess_data(df, numeric_cols=None, categorical_cols=None, date_col=None,
             df_clean['day'] = df_clean[date_col].dt.day
             df_clean['dayofweek'] = df_clean[date_col].dt.weekday
             df_clean['week'] = df_clean[date_col].dt.isocalendar().week
-            df_clean['is_weekend'] = df_clean['dayofweek'].apply(lambda x: 1 if x >= 5 else 0)
+            df_clean['is_weekend'] = df_clean[date_col].dt.weekday.apply(lambda x: 1 if x >= 5 else 0)
             df_clean['season'] = pd.cut(df_clean['month'], bins=[0, 3, 6, 9, 12], labels=['Q1', 'Q2', 'Q3', 'Q4'])
         except:
             st.warning(f"Cannot process time features for {date_col}.")
@@ -266,7 +274,6 @@ def engineer_features(train, test, numeric_cols, categorical_cols, target_col='s
     # Average sales per store and month
     if 'store_nbr' in train_fe.columns and 'month' in train_fe.columns and target_col in train_fe.columns:
         train_fe['avg_sales_store_month'] = train_fe.groupby(['store_nbr', 'month'])[target_col].transform('mean')
-        # Test set: Use train's mapping (approximation)
         if 'store_nbr' in test_fe.columns and 'month' in test_fe.columns:
             store_month_means = train_fe.groupby(['store_nbr', 'month'])[target_col].mean().to_dict()
             test_fe['avg_sales_store_month'] = test_fe.apply(
@@ -321,155 +328,156 @@ def main():
         st.write("- Mohamed Samy: Standardization, Time Features, Feature Engineering")
         st.write("- Hoda Magdy: Typos and Inconsistencies")
 
+    # Load data from GitHub
+    train_df = load_data_from_github("train")
+    test_df = load_data_from_github("test")
+
+    if train_df is None or test_df is None:
+        st.error("Cannot proceed without both train and test data.")
+        return
+
+    st.session_state['train_df'] = train_df
+    st.session_state['test_df'] = test_df
+
     # Tabs for Train and Test
     train_tab, test_tab = st.tabs(["Train Data", "Test Data"])
 
     with train_tab:
         with st.container():
-            train_file = st.file_uploader("Upload Train Data (from Milestone 1)", type=['csv'], key="train")
-            if train_file:
-                train_df = load_data(train_file, "train")
-                if train_df is not None:
-                    st.session_state['train_df'] = train_df
-                    st.write("**Preview**:")
-                    st.dataframe(train_df.head(), height=150)
+            st.write("**Train Data Preview (Loaded from GitHub)**")
+            st.dataframe(train_df.head(), height=150)
 
-                    # Configuration
-                    with st.form("train_config"):
-                        train_date_col = st.selectbox("Date Column", ['None'] + list(train_df.columns), index=0)
-                        train_date_col = None if train_date_col == 'None' else train_date_col
-                        train_target_col = st.selectbox("Target Column", train_df.columns, index=train_df.columns.tolist().index('sales') if 'sales' in train_df.columns else 0)
-                        train_numeric_cols, train_categorical_cols = detect_column_types(train_df, train_date_col)
-                        train_numeric_cols = st.multiselect("Numeric Columns", train_df.columns, default=train_numeric_cols)
-                        train_categorical_cols = st.multiselect("Categorical Columns", train_df.columns, default=train_categorical_cols)
-                        train_outlier_method = st.selectbox("Outliers", ['None', 'Remove', 'Replace with Median'], key="train_outliers")
-                        train_outlier_method = train_outlier_method.lower() if train_outlier_method != 'None' else None
-                        train_scale = st.checkbox("Scale Numerics")
-                        st.form_submit_button("Apply Configuration", on_click=lambda: st.session_state.update({
-                            'train_date_col': train_date_col,
-                            'train_target_col': train_target_col,
-                            'train_numeric_cols': train_numeric_cols,
-                            'train_categorical_cols': train_categorical_cols,
-                            'train_outlier_method': train_outlier_method,
-                            'train_scale': train_scale
-                        }))
+            # Configuration
+            with st.form("train_config"):
+                train_date_col = st.selectbox("Date Column", ['None'] + list(train_df.columns), index=train_df.columns.tolist().index('date') if 'date' in train_df.columns else 0)
+                train_date_col = None if train_date_col == 'None' else train_date_col
+                train_target_col = st.selectbox("Target Column", train_df.columns, index=train_df.columns.tolist().index('sales') if 'sales' in train_df.columns else 0)
+                train_numeric_cols, train_categorical_cols = detect_column_types(train_df, train_date_col)
+                train_numeric_cols = st.multiselect("Numeric Columns", train_df.columns, default=train_numeric_cols)
+                train_categorical_cols = st.multiselect("Categorical Columns", train_df.columns, default=train_categorical_cols)
+                train_outlier_method = st.selectbox("Outliers", ['None', 'Remove', 'Replace with Median'], key="train_outliers")
+                train_outlier_method = train_outlier_method.lower() if train_outlier_method != 'None' else None
+                train_scale = st.checkbox("Scale Numerics")
+                st.form_submit_button("Apply Configuration", on_click=lambda: st.session_state.update({
+                    'train_date_col': train_date_col,
+                    'train_target_col': train_target_col,
+                    'train_numeric_cols': train_numeric_cols,
+                    'train_categorical_cols': train_categorical_cols,
+                    'train_outlier_method': train_outlier_method,
+                    'train_scale': train_scale
+                }))
 
-                    # Exploration and Preprocessing
-                    with st.form("train_process"):
-                        st.markdown("**Process Train Data**")
-                        submitted = st.form_submit_button("Explore, Preprocess & Engineer Features")
+            # Exploration and Preprocessing
+            with st.form("train_process"):
+                st.markdown("**Process Train Data**")
+                submitted = st.form_submit_button("Explore, Preprocess & Engineer Features")
 
-                        if submitted:
-                            train_df = st.session_state['train_df']
-                            train_date_col = st.session_state.get('train_date_col', None)
-                            train_target_col = st.session_state.get('train_target_col', 'sales')
-                            train_numeric_cols = st.session_state.get('train_numeric_cols', detect_column_types(train_df, train_date_col)[0])
-                            train_categorical_cols = st.session_state.get('train_categorical_cols', detect_column_types(train_df, train_date_col)[1])
-                            train_outlier_method = st.session_state.get('train_outlier_method', None)
-                            train_scale = st.session_state.get('train_scale', False)
+                if submitted:
+                    train_df = st.session_state['train_df']
+                    train_date_col = st.session_state.get('train_date_col', None)
+                    train_target_col = st.session_state.get('train_target_col', 'sales')
+                    train_numeric_cols = st.session_state.get('train_numeric_cols', detect_column_types(train_df, train_date_col)[0])
+                    train_categorical_cols = st.session_state.get('train_categorical_cols', detect_column_types(train_df, train_date_col)[1])
+                    train_outlier_method = st.session_state.get('train_outlier_method', None)
+                    train_scale = st.session_state.get('train_scale', False)
 
-                            # Exploration
-                            explore_data(train_df, train_date_col, train_numeric_cols, train_categorical_cols, "train")
+                    # Exploration
+                    explore_data(train_df, train_date_col, train_numeric_cols, train_categorical_cols, "train")
 
-                            # Preprocessing
-                            processed_train, duplicates_removed = preprocess_data(
-                                train_df, train_numeric_cols, train_categorical_cols, train_date_col,
-                                train_outlier_method, train_scale, "train"
-                            )
-                            st.session_state['processed_train'] = processed_train
-                            st.write(f"**Processed**: {duplicates_removed} duplicates removed, {processed_train.shape[0]} rows remain")
-                            st.dataframe(processed_train.head(), height=150)
+                    # Preprocessing
+                    processed_train, duplicates_removed = preprocess_data(
+                        train_df, train_numeric_cols, train_categorical_cols, train_date_col,
+                        train_outlier_method, train_scale, "train"
+                    )
+                    st.session_state['processed_train'] = processed_train
+                    st.write(f"**Processed**: {duplicates_removed} duplicates removed, {processed_train.shape[0]} rows remain")
+                    st.dataframe(processed_train.head(), height=150)
 
-                            # Feature Engineering
-                            if 'test_df' in st.session_state:
-                                train_fe, _ = engineer_features(
-                                    processed_train, st.session_state['processed_test'],
-                                    train_numeric_cols, train_categorical_cols, train_target_col
-                                )
-                                st.session_state['train_fe'] = train_fe
-                                st.markdown("**Feature Engineered Train Data**")
-                                st.dataframe(train_fe.head(), height=150)
+                    # Feature Engineering
+                    if 'test_df' in st.session_state:
+                        train_fe, _ = engineer_features(
+                            processed_train, st.session_state['processed_test'],
+                            train_numeric_cols, train_categorical_cols, train_target_col
+                        )
+                        st.session_state['train_fe'] = train_fe
+                        st.markdown("**Feature Engineered Train Data**")
+                        st.dataframe(train_fe.head(), height=150)
 
-                                # Save
-                                output_path = os.path.join("data", f"train_m1.csv")
-                                train_fe.to_csv(output_path, index=False)
-                                st.success(f"Saved to {output_path}")
-                                os.system(f"dvc add {output_path}")
-                                os.system(f"git add {output_path}.dvc")
-                                os.system('git commit -m "Add processed train dataset to DVC"')
+                        # Save
+                        output_path = os.path.join("data", f"train_m1.csv")
+                        train_fe.to_csv(output_path, index=False)
+                        st.success(f"Saved to {output_path}")
+                        os.system(f"dvc add {output_path}")
+                        os.system(f"git add {output_path}.dvc")
+                        os.system('git commit -m "Add processed train dataset to DVC"')
 
     with test_tab:
         with st.container():
-            test_file = st.file_uploader("Upload Test Data (from Milestone 1)", type=['csv'], key="test")
-            if test_file:
-                test_df = load_data(test_file, "test")
-                if test_df is not None:
-                    st.session_state['test_df'] = test_df
-                    st.write("**Preview**:")
-                    st.dataframe(test_df.head(), height=150)
+            st.write("**Test Data Preview (Loaded from GitHub)**")
+            st.dataframe(test_df.head(), height=150)
 
-                    # Configuration
-                    with st.form("test_config"):
-                        test_date_col = st.selectbox("Date Column", ['None'] + list(test_df.columns), index=0)
-                        test_date_col = None if test_date_col == 'None' else test_date_col
-                        test_numeric_cols, test_categorical_cols = detect_column_types(test_df, test_date_col)
-                        test_numeric_cols = st.multiselect("Numeric Columns", test_df.columns, default=test_numeric_cols)
-                        test_categorical_cols = st.multiselect("Categorical Columns", test_df.columns, default=test_categorical_cols)
-                        test_outlier_method = st.selectbox("Outliers", ['None', 'Remove', 'Replace with Median'], key="test_outliers")
-                        test_outlier_method = test_outlier_method.lower() if test_outlier_method != 'None' else None
-                        test_scale = st.checkbox("Scale Numerics")
-                        st.form_submit_button("Apply Configuration", on_click=lambda: st.session_state.update({
-                            'test_date_col': test_date_col,
-                            'test_numeric_cols': test_numeric_cols,
-                            'test_categorical_cols': test_categorical_cols,
-                            'test_outlier_method': test_outlier_method,
-                            'test_scale': test_scale
-                        }))
+            # Configuration
+            with st.form("test_config"):
+                test_date_col = st.selectbox("Date Column", ['None'] + list(test_df.columns), index=test_df.columns.tolist().index('date') if 'date' in test_df.columns else 0)
+                test_date_col = None if test_date_col == 'None' else test_date_col
+                test_numeric_cols, test_categorical_cols = detect_column_types(test_df, test_date_col)
+                test_numeric_cols = st.multiselect("Numeric Columns", test_df.columns, default=test_numeric_cols)
+                test_categorical_cols = st.multiselect("Categorical Columns", test_df.columns, default=test_categorical_cols)
+                test_outlier_method = st.selectbox("Outliers", ['None', 'Remove', 'Replace with Median'], key="test_outliers")
+                test_outlier_method = test_outlier_method.lower() if test_outlier_method != 'None' else None
+                test_scale = st.checkbox("Scale Numerics")
+                st.form_submit_button("Apply Configuration", on_click=lambda: st.session_state.update({
+                    'test_date_col': test_date_col,
+                    'test_numeric_cols': test_numeric_cols,
+                    'test_categorical_cols': test_categorical_cols,
+                    'test_outlier_method': test_outlier_method,
+                    'test_scale': test_scale
+                }))
 
-                    # Exploration and Preprocessing
-                    with st.form("test_process"):
-                        st.markdown("**Process Test Data**")
-                        submitted = st.form_submit_button("Explore, Preprocess & Engineer Features")
+            # Exploration and Preprocessing
+            with st.form("test_process"):
+                st.markdown("**Process Test Data**")
+                submitted = st.form_submit_button("Explore, Preprocess & Engineer Features")
 
-                        if submitted:
-                            test_df = st.session_state['test_df']
-                            test_date_col = st.session_state.get('test_date_col', None)
-                            test_numeric_cols = st.session_state.get('test_numeric_cols', detect_column_types(test_df, test_date_col)[0])
-                            test_categorical_cols = st.session_state.get('test_categorical_cols', detect_column_types(test_df, test_date_col)[1])
-                            test_outlier_method = st.session_state.get('test_outlier_method', None)
-                            test_scale = st.session_state.get('test_scale', False)
+                if submitted:
+                    test_df = st.session_state['test_df']
+                    test_date_col = st.session_state.get('test_date_col', None)
+                    test_numeric_cols = st.session_state.get('test_numeric_cols', detect_column_types(test_df, test_date_col)[0])
+                    test_categorical_cols = st.session_state.get('test_categorical_cols', detect_column_types(test_df, test_date_col)[1])
+                    test_outlier_method = st.session_state.get('test_outlier_method', None)
+                    test_scale = st.session_state.get('test_scale', False)
 
-                            # Exploration
-                            explore_data(test_df, test_date_col, test_numeric_cols, test_categorical_cols, "test")
+                    # Exploration
+                    explore_data(test_df, test_date_col, test_numeric_cols, test_categorical_cols, "test")
 
-                            # Preprocessing
-                            processed_test, duplicates_removed = preprocess_data(
-                                test_df, test_numeric_cols, test_categorical_cols, test_date_col,
-                                test_outlier_method, test_scale, "test"
-                            )
-                            st.session_state['processed_test'] = processed_test
-                            st.write(f"**Processed**: {duplicates_removed} duplicates removed, {processed_test.shape[0]} rows remain")
-                            st.dataframe(processed_test.head(), height=150)
+                    # Preprocessing
+                    processed_test, duplicates_removed = preprocess_data(
+                        test_df, test_numeric_cols, test_categorical_cols, test_date_col,
+                        test_outlier_method, test_scale, "test"
+                    )
+                    st.session_state['processed_test'] = processed_test
+                    st.write(f"**Processed**: {duplicates_removed} duplicates removed, {processed_test.shape[0]} rows remain")
+                    st.dataframe(processed_test.head(), height=150)
 
-                            # Feature Engineering
-                            if 'processed_train' in st.session_state:
-                                _, test_fe = engineer_features(
-                                    st.session_state['processed_train'], processed_test,
-                                    st.session_state.get('train_numeric_cols', test_numeric_cols),
-                                    st.session_state.get('train_categorical_cols', test_categorical_cols),
-                                    st.session_state.get('train_target_col', 'sales')
-                                )
-                                st.session_state['test_fe'] = test_fe
-                                st.markdown("**Feature Engineered Test Data**")
-                                st.dataframe(test_fe.head(), height=150)
+                    # Feature Engineering
+                    if 'processed_train' in st.session_state:
+                        _, test_fe = engineer_features(
+                            st.session_state['processed_train'], processed_test,
+                            st.session_state.get('train_numeric_cols', test_numeric_cols),
+                            st.session_state.get('train_categorical_cols', test_categorical_cols),
+                            st.session_state.get('train_target_col', 'sales')
+                        )
+                        st.session_state['test_fe'] = test_fe
+                        st.markdown("**Feature Engineered Test Data**")
+                        st.dataframe(test_fe.head(), height=150)
 
-                                # Save
-                                output_path = os.path.join("data", f"test_m1.csv")
-                                test_fe.to_csv(output_path, index=False)
-                                st.success(f"Saved to {output_path}")
-                                os.system(f"dvc add {output_path}")
-                                os.system(f"git add {output_path}.dvc")
-                                os.system('git commit -m "Add processed test dataset to DVC"')
+                        # Save
+                        output_path = os.path.join("data", f"test_m1.csv")
+                        test_fe.to_csv(output_path, index=False)
+                        st.success(f"Saved to {output_path}")
+                        os.system(f"dvc add {output_path}")
+                        os.system(f"git add {output_path}.dvc")
+                        os.system('git commit -m "Add processed test dataset to DVC"')
 
     st.divider()
     st.markdown("**Created with Belal Khamis, All Rights Reserved**")
