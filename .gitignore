@@ -1,9 +1,11 @@
-data/ 
-*.parquet 
-models/ 
+data/* 
+!data/*.dvc 
+models/artifacts/* 
+!models/artifacts/*.dvc 
 mlruns/ 
 .ipynb_checkpoints/ 
 .jupyter/ 
 .virtual_documents/ 
 *.zip 
 *.jpg 
+__pycache__/ 
