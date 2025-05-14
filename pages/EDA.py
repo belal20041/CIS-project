@@ -18,7 +18,7 @@ def load_data(dataset_type="train"):
     try:
         url = f"https://raw.githubusercontent.com/CIS-project/data/main/processed_{dataset_type}_{dataset_type.capitalize()}.csv"
         df = pd.read_csv(StringIO(requests.get(url).text))
-        df = df.loc[:, ~df.columns.str.contains('^unnamed')].copy()
+        df = df.loc[:, ~df.columns.str.contains('^unnamed', case=False)].copy()
         df.columns = df.columns.str.lower().str.strip().str.replace(" ", "_")
         return df
     except Exception as e:
@@ -30,7 +30,7 @@ def detect_column_types(df, date_col=None):
     numeric_cols = df.select_dtypes(include=['int64', 'float64']).columns.tolist()
     categorical_cols = [col for col in df.columns if col != date_col and 
                        (df[col].dtype in ['object', 'category', 'bool'] or df[col].nunique() / len(df) < 0.05)]
-    if date_col in numeric_cols:
+    if date_col and date_col in numeric_cols:
         numeric_cols.remove(date_col)
     return numeric_cols, categorical_cols
 
@@ -66,6 +66,7 @@ def explore_data(df, date_col=None, numeric_cols=None, categorical_cols=None, da
     fig, ax = plt.subplots(figsize=(8, 3))
     msno.matrix(df, ax=ax)
     st.pyplot(fig)
+    plt.close(fig)
 
     # Sales trends
     if date_col and 'sales' in df.columns:
@@ -76,6 +77,7 @@ def explore_data(df, date_col=None, numeric_cols=None, categorical_cols=None, da
         ax.set_title("Sales Over Time")
         plt.xticks(rotation=45)
         st.pyplot(fig)
+        plt.close(fig)
 
     # Sales distribution by categories
     for col in ['family', 'city', 'store_nbr']:
@@ -86,6 +88,7 @@ def explore_data(df, date_col=None, numeric_cols=None, categorical_cols=None, da
             ax.set_title(f"Sales by {col.capitalize()}")
             plt.xticks(rotation=45)
             st.pyplot(fig)
+            plt.close(fig)
 
     # Sales distribution and correlations
     if 'sales' in df.columns:
@@ -93,12 +96,14 @@ def explore_data(df, date_col=None, numeric_cols=None, categorical_cols=None, da
         fig, ax = plt.subplots(figsize=(8, 3))
         sns.histplot(df['sales'], bins=30, kde=True, ax=ax)
         st.pyplot(fig)
+        plt.close(fig)
 
     if numeric_cols:
         st.markdown("**Correlation Heatmap**")
         fig, ax = plt.subplots(figsize=(6, 4))
         sns.heatmap(df[numeric_cols].corr(), annot=True, cmap='coolwarm', fmt=".2f", ax=ax)
         st.pyplot(fig)
+        plt.close(fig)
 
     # Outliers
     if numeric_cols:
@@ -111,7 +116,7 @@ def explore_data(df, date_col=None, numeric_cols=None, categorical_cols=None, da
             outliers_zscore = df.iloc[df[col].dropna().index][abs(z_scores) > 3][col]
             st.write(f"{col}: IQR Outliers = {len(outliers_iqr)}, Z-score Outliers = {len(outliers_zscore)}")
 
-def preprocess_data(df, numeric_cols, categorical_cols, date_col=None, handle_outliers=None, scale=False):
+def preprocess_data(df, numeric_cols, categorical_cols, date_col=None, type_col=None, handle_outliers=None, scale=False):
     """Preprocess data: handle missing values, duplicates, outliers, and time features."""
     df_clean = df.copy()
 
@@ -121,90 +126,63 @@ def preprocess_data(df, numeric_cols, categorical_cols, date_col=None, handle_ou
             if col in numeric_cols:
                 df_clean[col].fillna(df_clean[col].median(), inplace=True)
             elif col in categorical_cols:
-                df_clean[col].fillna(df_clean[col].mode()[0], inplace=True)
-            else:
-                df_clean[col].fillna('Unknown', inplace=True)
+                df_clean[col].fillna(df_clean[col    # Initialize an empty DataFrame for the categorical columns
+    categorical_df = pd.DataFrame()
 
-    # Duplicates
-    initial_rows = df_clean.shape[0]
-    df_clean = df_clean.drop_duplicates()
+    # Iterate over each categorical column
+    for col in categorical_cols:
+        # Create a temporary DataFrame for the current categorical column
+        temp_df = pd.DataFrame()
+        # Apply one-hot encoding to the current categorical column
+        temp_df = pd.get_dummies(df_clean[col], prefix=col, dummy_na=True)
+        # Concatenate the temporary DataFrame with the categorical DataFrame
+        categorical_df = pd.concat([categorical_df, temp_df], axis=1)
+    
+    # Drop the original categorical columns from df_clean
+    df_clean = df_clean.drop(columns=categorical_cols)
+    
+    # Concatenate the numerical DataFrame with the one-hot encoded categorical DataFrame
+    df_clean = pd.concat([df_clean, categorical_df], axis=1)
+    
+    return df_clean
 
-    # Outliers
-    if handle_outliers and numeric_cols:
-        for col in numeric_cols:
-            Q1, Q3 = df_clean[col].quantile([0.25, 0.75])
-            IQR = Q3 - Q1
-            lower, upper = Q1 - 1.5 * IQR, Q3 + 1.5 * IQR
-            if handle_outliers == 'remove':
-                df_clean = df_clean[(df_clean[col] >= lower) & (df_clean[col] <= upper)]
-            elif handle_outliers == 'replace':
-                median_value = df_clean[col].median()
-                df_clean[col] = df_clean[col].apply(lambda x: median_value if x < lower or x > upper else x)
-
-    # Time features
-    if date_col and date_col in df_clean.columns:
-        df_clean[date_col] = pd.to_datetime(df_clean[date_col], errors='coerce')
-        df_clean['year'] = df_clean[date_col].dt.year
-        df_clean['month'] = df_clean[date_col].dt.month
-        df_clean['day'] = df_clean[date_col].dt.day
-        df_clean['weekday'] = df_clean[date_col].dt.weekday
-        df_clean['week'] = df_clean[date_col].dt.isocalendar().week
-        df_clean['is_weekend'] = df_clean['weekday'].apply(lambda x: 1 if x >= 5 else 0)
-        df_clean['season'] = pd.cut(df_clean['month'], bins=[0, 3, 6, 9, 12], labels=['Q1', 'Q2', 'Q3', 'Q4'])
-
-    # Scale numeric columns
-    if scale and numeric_cols:
-        scaler = StandardScaler()
-        df_clean[numeric_cols] = scaler.fit_transform(df_clean[numeric_cols])
-
-    # Clean text columns
-    text_cols = ['family', 'city', 'state', 'cluster', 'type_y', 'locale', 'locale_name', 'description', 'transferred']
-    df_clean = clean_text_columns(df_clean, text_cols)
-
-    return df_clean, initial_rows - df_clean.shape[0]
-
-def engineer_features(train, test, numeric_cols, categorical_cols, target_col='sales'):
-    """Engineer features for train and test datasets."""
-    train_fe, test_fe = train.copy(), test.copy()
+def engineer_features(df, numeric_cols, categorical_cols, date_col=None, type_col=None):
+    """Engineer features for the dataset."""
+    df_fe = df.copy()
 
     # Interaction terms
-    for df in [train_fe, test_fe]:
-        if 'onpromotion' in df and 'is_weekend' in df:
-            df['promo_weekend'] = df['onpromotion'] * df['is_weekend']
-        if 'description' in df:
-            df['is_holiday'] = df['description'].str.contains('Holiday|Navidad', case=False, na=False).astype(int)
+    if 'onpromotion' in df_fe and 'is_weekend' in df_fe:
+        df_fe['promo_weekend'] = df_fe['onpromotion'] * df_fe['is_weekend']
+    if 'description' in df_fe:
+        df_fe['is_holiday'] = df_fe['description'].str.contains('Holiday|Navidad', case=False, na=False).astype(int)
 
-    # Mean encoding
+    # Mean encoding for categorical columns
     for col in ['city', 'state']:
-        if col in train_fe and target_col in train_fe:
-            mean_map = train_fe.groupby(col)[target_col].mean().to_dict()
-            train_fe[f'{col}_encoded'] = train_fe[col].map(mean_map)
-            test_fe[f'{col}_encoded'] = test_fe[col].map(mean_map).fillna(train_fe[target_col].mean())
+        if col in df_fe:
+            mean_map = df_fe.groupby(col)['sales'].mean().to_dict()
+            df_fe[f'{col}_encoded'] = df_fe[col].map(mean_map)
 
     # Frequency encoding
     for col in ['family', 'locale_name']:
-        if col in train_fe:
-            freq_map = train_fe[col].value_counts(normalize=True).to_dict()
-            train_fe[f'{col}_encoded'] = train_fe[col].map(freq_map)
-            test_fe[f'{col}_encoded'] = test_fe[col].map(freq_map).fillna(0)
+        if col in df_fe:
+            freq_map = df_fe[col].value_counts(normalize=True).to_dict()
+            df_fe[f'{col}_encoded'] = df_fe[col].map(freq_map)
 
     # Ordinal encoding
     locale_order = {'National': 2, 'Regional': 1, 'Local': 0}
     type_y_order = {'Holiday': 2, 'Event': 1, 'Bridge': 0}
-    for df in [train_fe, test_fe]:
-        if 'locale' in df:
-            df['locale_encoded'] = df['locale'].map(locale_order).fillna(0)
-        if 'type_y' in df:
-            df['type_y_encoded'] = df['type_y'].map(type_y_order.fillna(0))
+    if 'locale' in df_fe:
+        df_fe['locale_encoded'] = df_fe['locale'].map(locale_order).fillna(0)
+    if 'type_y' in df_fe:
+        df_fe['type_y_encoded'] = df_fe['type_y'].map(type_y_order).fillna(0)
 
     # Binning
-    if 'dcoilwtico' in train_fe:
-        bins = [-np.inf, train_fe['dcoilwtico'].quantile(0.25), train_fe['dcoilwtico'].quantile(0.75), np.inf]
+    if 'dcoilwtico' in df_fe:
+        bins = [-np.inf, df_fe['dcoilwtico'].quantile(0.25), df_fe['dcoilwtico'].quantile(0.75), np.inf]
         labels = ['low', 'medium', 'high']
-        train_fe['dcoilwtico_bin'] = pd.cut(train_fe['dcoilwtico'], bins=bins, labels=labels)
-        test_fe['dcoilwtico_bin'] = pd.cut(test_fe['dcoilwtico'], bins=bins, labels=labels)
+        df_fe['dcoilwtico_bin'] = pd.cut(df_fe['dcoilwtico'], bins=bins, labels=labels)
 
-    return train_fe, test_fe
+    return df_fe
 
 def main():
     with st.expander("ℹ️ Project Info"):
@@ -225,8 +203,13 @@ def main():
     # Load data
     train_df = load_data("train")
     test_df = load_data("test")
-    if not train_df or not test_df:
+    
+    # Check if data loaded successfully
+    if train_df is None or test_df is None:
         st.error("Data loading failed.")
+        return
+    if train_df.empty or test_df.empty:
+        st.error("Loaded data is empty.")
         return
 
     st.session_state['train_df'] = train_df
@@ -243,7 +226,7 @@ def main():
             # Configuration
             with st.form(f"{dataset_type}_config"):
                 date_col = st.selectbox("Date Column", ['None'] + list(df.columns), 
-                                       index=df.columns.tolist().index('date') if 'date' in df.columns else 0)
+                                      index=df.columns.tolist().index('date') if 'date' in df.columns else 0)
                 date_col = None if date_col == 'None' else date_col
                 numeric_cols, categorical_cols = detect_column_types(df, date_col)
                 numeric_cols = st.multiselect("Numeric Columns", df.columns, default=numeric_cols)
@@ -273,25 +256,22 @@ def main():
                     explore_data(df, date_col, numeric_cols, categorical_cols, dataset_type)
 
                     # Preprocessing
-                    processed_df, duplicates_removed = preprocess_data(df, numeric_cols, categorical_cols, date_col, outlier_method, scale)
+                    processed_df = preprocess_data(df, numeric_cols, categorical_cols, date_col, outlier_method, scale)
                     st.session_state[f'processed_{dataset_type}'] = processed_df
-                    st.write(f"**Processed**: {duplicates_removed} duplicates removed, {processed_df.shape[0]} rows remain")
+                    st.write(f"**Processed**: {processed_df.shape[0]} rows remain")
                     st.dataframe(processed_df.head(), height=150)
 
                     # Feature Engineering
-                    if st.session_state.get('processed_train') and st.session_state.get('processed_test'):
-                        train_fe, test_fe = engineer_features(
-                            st.session_state['processed_train'], st.session_state['processed_test'],
-                            numeric_cols, categorical_cols
-                        )
-                        st.session_state[f'{dataset_type}_fe'] = train_fe if dataset_type == 'train' else test_fe
-                        st.markdown(f"**Feature Engineered {dataset_type.capitalize()} Data**")
-                        st.dataframe(st.session_state[f'{dataset_type}_fe'].head(), height=150)
+                    fe_df = engineer_features(processed_df, numeric_cols, categorical_cols, date_col)
+                    st.session_state[f'{dataset_type}_fe'] = fe_df
+                    st.markdown(f"**Feature Engineered {dataset_type.capitalize()} Data**")
+                    st.dataframe(fe_df.head(), height=150)
 
-                        # Save
-                        output_path = os.path.join("data", f"{dataset_type}_m1.csv")
-                        st.session_state[f'{dataset_type}_fe'].to_csv(output_path, index=False)
-                        st.success(f"Saved to {output_path}")
+                    # Save
+                    os.makedirs("data", exist_ok=True)
+                    output_path = os.path.join("data", f"{dataset_type}_m1.csv")
+                    fe_df.to_csv(output_path, index=False)
+                    st.success(f"Saved to {output_path}")
 
 if __name__ == "__main__":
     main()
