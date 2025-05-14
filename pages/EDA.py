@@ -7,33 +7,37 @@ import missingno as msno
 from scipy.stats import zscore
 from sklearn.preprocessing import StandardScaler
 from statsmodels.tsa.seasonal import seasonal_decompose
-from statsmodels.graphics.tsaplots import plot_acf
+from statsmodels.graphics.tsaplots import plot_acf, plot_pacf
 from io import BytesIO
+import os
+import tempfile
 
-st.set_page_config(page_title="Milestone 1: Data Analysis", layout="wide")
-st.markdown("<h1 style='text-align: center;'>Data Collection & Preprocessing</h1>", unsafe_allow_html=True)
+# Setup
+st.set_page_config(page_title="Time Series Data Analysis", layout="wide")
+st.markdown("<h1 style='text-align: center;'>Time Series Data Analysis & Preprocessing</h1>", unsafe_allow_html=True)
 
+# Utility Functions
 def load_data(file, dataset_type="train"):
-    """Load dataset from uploaded file (CSV or Parquet)."""
-    if file:
-        try:
-            if file.name.endswith('.csv'):
-                df = pd.read_csv(file)
-            elif file.name.endswith('.parquet'):
-                df = pd.read_parquet(file)
-            else:
-                st.error("Unsupported format. Use CSV or Parquet.")
-                return None
-            df = df.loc[:, ~df.columns.str.contains('^unnamed', case=False)]
-            df.columns = df.columns.str.lower().str.strip().str.replace(" ", "_")
-            return df
-        except Exception as e:
-            st.error(f"Failed to load {dataset_type} data: {e}")
+    """Load dataset from CSV or Parquet."""
+    if not file:
+        return None
+    try:
+        if file.name.endswith('.csv'):
+            df = pd.read_csv(file)
+        elif file.name.endswith('.parquet'):
+            df = pd.read_parquet(file)
+        else:
+            st.error("Please upload a CSV or Parquet file.")
             return None
-    return None
+        df = df.loc[:, ~df.columns.str.contains('^unnamed', case=False)]
+        df.columns = df.columns.str.lower().str.strip().str.replace(" ", "_")
+        return df
+    except Exception as e:
+        st.error(f"Error loading {dataset_type} data: {e}")
+        return None
 
 def detect_column_types(df, date_col=None):
-    """Detect numeric and categorical columns."""
+    """Identify numeric and categorical columns."""
     numeric_cols = df.select_dtypes(['int64', 'float64']).columns.tolist()
     categorical_cols = [col for col in df.columns if col != date_col and 
                        (df[col].dtype in ['object', 'category', 'bool'] or df[col].nunique() / len(df) < 0.05)]
@@ -42,7 +46,7 @@ def detect_column_types(df, date_col=None):
     return numeric_cols, categorical_cols
 
 def clean_text_columns(df, columns):
-    """Clean text columns and fix typos."""
+    """Clean text columns and correct typos."""
     df_clean = df.copy()
     for col in columns:
         if col in df_clean.columns:
@@ -56,9 +60,26 @@ def clean_text_columns(df, columns):
             df_clean[col] = df_clean[col].replace(corrections)
     return df_clean
 
+def get_download_file(df, filename):
+    """Generate CSV file for download."""
+    try:
+        if df is None or df.empty:
+            raise ValueError("Dataframe is empty or None")
+        buf = BytesIO()
+        df.to_csv(buf, index=False)
+        buf.seek(0)
+        return buf.getvalue(), 'text/csv'
+    except Exception as e:
+        st.error(f"Failed to generate download file: {e}")
+        return None, None
+
+# Data Exploration
 def explore_data(df, date_col=None, numeric_cols=None, categorical_cols=None, dataset_type="train"):
-    """Perform EDA with key visualizations, including time series and imbalance."""
+    """Generate data insights and visualizations."""
     st.markdown(f"### {dataset_type.capitalize()} Data Insights")
+    temp_dir = tempfile.gettempdir()
+    
+    # Summary
     col1, col2 = st.columns(2)
     with col1:
         st.write("**Shape**:", df.shape)
@@ -68,56 +89,79 @@ def explore_data(df, date_col=None, numeric_cols=None, categorical_cols=None, da
         st.write("**Data Types**:", df.dtypes.to_dict())
         st.write("**Unique Values**:", df.nunique().to_dict())
 
-    # Missing values visualization
+    # Missing Values Matrix
     st.markdown("**Missing Values Matrix**")
-    fig, ax = plt.subplots(figsize=(8, 3))
+    fig, ax = plt.subplots(figsize=(10, 4))
     msno.matrix(df, ax=ax)
+    plt.tight_layout()
+    plt.savefig(os.path.join(temp_dir, f"{dataset_type}_missing_values.png"))
     st.pyplot(fig)
     plt.close(fig)
 
-    # Time series visualizations
+    # Time Series Visualizations
     if date_col and 'sales' in df.columns:
         df[date_col] = pd.to_datetime(df[date_col], errors='coerce')
         df = df.sort_values(date_col)
 
-        # Sales trends
+        # Sales Trends
         st.markdown("**Sales Trends**")
-        fig, ax = plt.subplots(figsize=(8, 3))
+        fig, ax = plt.subplots(figsize=(10, 4))
         sns.lineplot(x=date_col, y='sales', data=df, ax=ax)
         ax.set_title("Sales Over Time")
         plt.xticks(rotation=45)
+        plt.tight_layout()
+        plt.savefig(os.path.join(temp_dir, f"{dataset_type}_sales_trends.png"))
         st.pyplot(fig)
         plt.close(fig)
 
-        # Monthly seasonality
+        # Weekly Sales Trends
+        st.markdown("**Weekly Sales Trends**")
+        df_weekly = df.set_index(date_col)['sales'].resample('W').sum().reset_index()
+        fig, ax = plt.subplots(figsize=(10, 4))
+        sns.lineplot(x=date_col, y='sales', data=df_weekly, ax=ax)
+        ax.set_title("Weekly Sales Trends")
+        plt.xticks(rotation=45)
+        plt.tight_layout()
+        plt.savefig(os.path.join(temp_dir, f"{dataset_type}_weekly_sales.png"))
+        st.pyplot(fig)
+        plt.close(fig)
+
+        # Monthly Seasonality
         df['month'] = df[date_col].dt.month
         st.markdown("**Monthly Seasonality**")
-        fig, ax = plt.subplots(figsize=(8, 3))
+        fig, ax = plt.subplots(figsize=(10, 4))
         sns.boxplot(x='month', y='sales', data=df, ax=ax)
+        ax.set_title("Monthly Seasonality")
+        plt.tight_layout()
+        plt.savefig(os.path.join(temp_dir, f"{dataset_type}_monthly_seasonality.png"))
         st.pyplot(fig)
         plt.close(fig)
 
-        # Rolling mean and std
+        # Rolling Mean and Std
         st.markdown("**Rolling Mean and Std (30-day window)**")
         rolling = df.set_index(date_col)['sales'].rolling(window=30).agg(['mean', 'std']).dropna()
-        fig, ax = plt.subplots(figsize=(8, 3))
+        fig, ax = plt.subplots(figsize=(10, 4))
         rolling['mean'].plot(ax=ax, label='Rolling Mean')
         rolling['std'].plot(ax=ax, label='Rolling Std', alpha=0.5)
+        ax.set_title("Rolling Mean and Std (30-day window)")
         ax.legend()
         plt.xticks(rotation=45)
+        plt.tight_layout()
+        plt.savefig(os.path.join(temp_dir, f"{dataset_type}_rolling_mean_std.png"))
         st.pyplot(fig)
         plt.close(fig)
 
-        # Seasonal decomposition
+        # Seasonal Decomposition
         st.markdown("**Seasonal Decomposition (Yearly)**")
         try:
             df_ts = df.set_index(date_col)['sales'].resample('M').sum()
             decomp = seasonal_decompose(df_ts, model='additive', period=12)
-            fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(8, 6))
+            fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 8))
             decomp.trend.plot(ax=ax1, title='Trend')
             decomp.seasonal.plot(ax=ax2, title='Seasonal')
             decomp.resid.plot(ax=ax3, title='Residual')
             plt.tight_layout()
+            plt.savefig(os.path.join(temp_dir, f"{dataset_type}_seasonal_decomposition.png"))
             st.pyplot(fig)
             plt.close(fig)
         except Exception as e:
@@ -125,43 +169,81 @@ def explore_data(df, date_col=None, numeric_cols=None, categorical_cols=None, da
 
         # Autocorrelation
         st.markdown("**Autocorrelation Plot**")
-        fig, ax = plt.subplots(figsize=(8, 3))
+        fig, ax = plt.subplots(figsize=(10, 4))
         plot_acf(df['sales'].dropna(), lags=30, ax=ax)
+        ax.set_title("Autocorrelation Plot")
+        plt.tight_layout()
+        plt.savefig(os.path.join(temp_dir, f"{dataset_type}_autocorrelation.png"))
         st.pyplot(fig)
         plt.close(fig)
 
-    # Sales distribution by categories
-    for col in ['family', 'city', 'state', 'store_nbr']:
-        if col in df.columns and 'sales' in df.columns:
-            st.markdown(f"**Sales by {col.capitalize()}**")
-            fig, ax = plt.subplots(figsize=(8, 3))
-            sns.boxplot(data=df, x=col, y='sales', ax=ax)
-            ax.set_title(f"Sales by {col.capitalize()}")
+        # Partial Autocorrelation
+        st.markdown("**Partial Autocorrelation Plot**")
+        fig, ax = plt.subplots(figsize=(10, 4))
+        plot_pacf(df['sales'].dropna(), lags=30, ax=ax)
+        ax.set_title("Partial Autocorrelation Plot")
+        plt.tight_layout()
+        plt.savefig(os.path.join(temp_dir, f"{dataset_type}_partial_autocorrelation.png"))
+        st.pyplot(fig)
+        plt.close(fig)
+
+    # Categorical Data Imbalance
+    st.markdown("**Categorical Data Imbalance**")
+    for col in ['family', 'city', 'transferred'] if categorical_cols else []:
+        if col in df.columns:
+            st.markdown(f"**Distribution of {col.capitalize()}**")
+            fig, ax = plt.subplots(figsize=(10, 4))
+            sns.countplot(x=col, data=df, ax=ax, order=df[col].value_counts().index)
+            ax.set_title(f"Distribution of {col.capitalize()}")
             plt.xticks(rotation=45)
+            plt.tight_layout()
+            plt.savefig(os.path.join(temp_dir, f"{dataset_type}_{col}_imbalance.png"))
             st.pyplot(fig)
             plt.close(fig)
 
-    # Sales vs promotions
+    # Sales by Categories
+    for col in ['family', 'city', 'state', 'store_nbr']:
+        if col in df.columns and 'sales' in df.columns:
+            st.markdown(f"**Sales by {col.capitalize()}**")
+            fig, ax = plt.subplots(figsize=(10, 4))
+            sns.boxplot(x=col, y='sales', data=df, ax=ax)
+            ax.set_title(f"Sales by {col.capitalize()}")
+            plt.xticks(rotation=45)
+            plt.tight_layout()
+            plt.savefig(os.path.join(temp_dir, f"{dataset_type}_sales_by_{col}.png"))
+            st.pyplot(fig)
+            plt.close(fig)
+
+    # Sales vs Promotions
     if 'sales' in df.columns and 'onpromotion' in df.columns:
         st.markdown("**Sales vs Promotions**")
-        fig, ax = plt.subplots(figsize=(8, 3))
+        fig, ax = plt.subplots(figsize=(10, 4))
         sns.boxplot(x='onpromotion', y='sales', data=df, ax=ax)
+        ax.set_title("Sales vs Promotions")
+        plt.tight_layout()
+        plt.savefig(os.path.join(temp_dir, f"{dataset_type}_sales_vs_promotions.png"))
         st.pyplot(fig)
         plt.close(fig)
 
-    # Sales distribution
+    # Sales Distribution
     if 'sales' in df.columns:
         st.markdown("**Sales Distribution**")
-        fig, ax = plt.subplots(figsize=(8, 3))
+        fig, ax = plt.subplots(figsize=(10, 4))
         sns.histplot(df['sales'], bins=30, kde=True, ax=ax)
+        ax.set_title("Sales Distribution")
+        plt.tight_layout()
+        plt.savefig(os.path.join(temp_dir, f"{dataset_type}_sales_distribution.png"))
         st.pyplot(fig)
         plt.close(fig)
 
-    # Correlation heatmap
+    # Correlation Heatmap
     if numeric_cols:
         st.markdown("**Correlation Heatmap**")
-        fig, ax = plt.subplots(figsize=(6, 4))
+        fig, ax = plt.subplots(figsize=(8, 6))
         sns.heatmap(df[numeric_cols].corr(), annot=True, cmap='coolwarm', fmt=".2f", ax=ax)
+        ax.set_title("Correlation Heatmap")
+        plt.tight_layout()
+        plt.savefig(os.path.join(temp_dir, f"{dataset_type}_correlation_heatmap.png"))
         st.pyplot(fig)
         plt.close(fig)
 
@@ -174,6 +256,7 @@ def explore_data(df, date_col=None, numeric_cols=None, categorical_cols=None, da
             sns.boxplot(x=df[col], ax=axes[i])
             axes[i].set_title(col)
         plt.tight_layout()
+        plt.savefig(os.path.join(temp_dir, f"{dataset_type}_outliers.png"))
         st.pyplot(fig)
         plt.close(fig)
         for col in numeric_cols:
@@ -184,23 +267,12 @@ def explore_data(df, date_col=None, numeric_cols=None, categorical_cols=None, da
             outliers_zscore = df.iloc[df[col].dropna().index][abs(z_scores) > 3][col]
             st.write(f"{col}: IQR Outliers = {len(outliers_iqr)}, Z-score Outliers = {len(outliers_zscore)}")
 
-    # Data imbalance for categorical columns
-    st.markdown("**Categorical Data Imbalance**")
-    for col in ['family', 'city', 'transferred'] if categorical_cols else []:
-        if col in df.columns:
-            st.markdown(f"**Distribution of {col.capitalize()}**")
-            fig, ax = plt.subplots(figsize=(8, 3))
-            sns.countplot(x=col, data=df, ax=ax, order=df[col].value_counts().index)
-            ax.set_title(f"Distribution of {col.capitalize()}")
-            plt.xticks(rotation=45)
-            st.pyplot(fig)
-            plt.close(fig)
-
+# Data Preprocessing
 def preprocess_data(df, numeric_cols, categorical_cols, date_col=None, handle_outliers=None, scale=False, dataset_type="train"):
     """Preprocess data: handle missing values, duplicates, outliers, and time features."""
     df_clean = df.copy()
 
-    # Missing values
+    # Missing Values
     for col in df_clean.columns:
         if df_clean[col].isna().sum() > 0:
             if col in numeric_cols:
@@ -226,7 +298,7 @@ def preprocess_data(df, numeric_cols, categorical_cols, date_col=None, handle_ou
                 median_value = df_clean[col].median()
                 df_clean[col] = df_clean[col].apply(lambda x: median_value if x < lower or x > upper else x)
 
-    # Time features
+    # Time Features
     if date_col and date_col in df_clean.columns:
         df_clean[date_col] = pd.to_datetime(df_clean[date_col], errors='coerce')
         df_clean['year'] = df_clean[date_col].dt.year
@@ -238,17 +310,17 @@ def preprocess_data(df, numeric_cols, categorical_cols, date_col=None, handle_ou
         df_clean['season'] = pd.cut(df_clean['month'], bins=[0, 3, 6, 9, 12], labels=['Q1', 'Q2', 'Q3', 'Q4'])
         df_clean['sin_month'] = np.sin(2 * np.pi * df_clean['month'] / 12)
 
-    # Convert categorical columns to category dtype
+    # Categorical Dtype
     for col in categorical_cols:
         if col in df_clean.columns:
             df_clean[col] = df_clean[col].astype('category')
 
-    # Ensure numeric columns are numeric
+    # Numeric Coercion
     for col in numeric_cols:
         if col in df_clean.columns:
             df_clean[col] = pd.to_numeric(df_clean[col], errors='coerce')
 
-    # Scale numeric columns
+    # Scaling
     if scale and numeric_cols:
         valid_cols = [col for col in numeric_cols if col in df_clean and df_clean[col].std() > 1e-6]
         if valid_cols:
@@ -259,17 +331,18 @@ def preprocess_data(df, numeric_cols, categorical_cols, date_col=None, handle_ou
             elif dataset_type == "test" and 'scaler' in st.session_state:
                 df_clean[valid_cols] = st.session_state['scaler'].transform(df_clean[valid_cols])
 
-    # Clean text columns
+    # Text Cleaning
     text_cols = ['family', 'city', 'state', 'cluster', 'type_y', 'locale', 'locale_name', 'description', 'transferred']
     df_clean = clean_text_columns(df_clean, text_cols)
 
     return df_clean, initial_rows - df_clean.shape[0]
 
+# Feature Engineering
 def engineer_features(train_df, test_df, numeric_cols, categorical_cols, target='sales'):
     """Engineer features for train and test datasets."""
     train_fe, test_fe = train_df.copy(), test_df.copy()
 
-    # Interaction terms
+    # Interaction Terms
     if 'onpromotion' in train_fe and target in train_fe:
         train_fe['sales_onpromo'] = train_fe[target] * train_fe['onpromotion']
         test_fe['sales_onpromo'] = test_fe['onpromotion'] * 0 if 'onpromotion' in test_fe else 0
@@ -277,28 +350,28 @@ def engineer_features(train_df, test_df, numeric_cols, categorical_cols, target=
         train_fe['promo_weekend'] = train_fe['onpromotion'] * train_fe['is_weekend']
         test_fe['promo_weekend'] = test_fe['onpromotion'] * test_fe['is_weekend'] if 'onpromotion' in test_fe and 'is_weekend' in test_fe else 0
 
-    # Mean encoding
+    # Mean Encoding
     for col in ['city', 'state']:
         if col in train_fe and target in train_fe:
             mean_map = train_fe.groupby(col)[target].mean().to_dict()
             train_fe[f'{col}_encoded'] = train_fe[col].map(mean_map)
             test_fe[f'{col}_encoded'] = test_fe[col].map(mean_map).fillna(train_fe[target].mean())
 
-    # Frequency encoding
+    # Frequency Encoding
     for col in ['family', 'locale_name']:
         if col in train_fe:
             freq_map = train_fe[col].value_counts(normalize=True).to_dict()
             train_fe[f'{col}_encoded'] = train_fe[col].map(freq_map)
             test_fe[f'{col}_encoded'] = test_fe[col].map(freq_map).fillna(0)
 
-    # Average sales per store and month
+    # Average Sales per Store and Month
     if 'store_nbr' in train_fe and 'month' in train_fe and target in train_fe:
         train_fe['avg_sales_store_month'] = train_fe.groupby(['store_nbr', 'month'])[target].transform('mean')
         store_month_means = train_fe.groupby(['store_nbr', 'month'])[target].mean().to_dict()
         test_fe['avg_sales_store_month'] = test_fe.apply(
             lambda x: store_month_means.get((x['store_nbr'], x['month']), train_fe[target].mean()), axis=1)
 
-    # Holiday and encoding
+    # Holiday and Encoding
     for df in [train_fe, test_fe]:
         if 'description' in df:
             df['is_holiday'] = df['description'].str.contains('Holiday|Navidad', case=False, na=False).astype(int)
@@ -322,28 +395,17 @@ def engineer_features(train_df, test_df, numeric_cols, categorical_cols, target=
 
     return train_fe, test_fe
 
-def get_download_file(df, filename):
-    """Generate downloadable CSV file."""
-    try:
-        if df is None or df.empty:
-            raise ValueError("Dataframe is empty or None")
-        buf = BytesIO()
-        df.to_csv(buf, index=False)
-        buf.seek(0)
-        return buf.getvalue(), 'text/csv'
-    except Exception as e:
-        st.error(f"Failed to generate download file: {e}")
-        return None, None
-
+# Main Streamlit App
 def main():
-    """Main Streamlit app."""
+    """Streamlit app for time series analysis."""
     with st.expander("ℹ️ Project Info"):
         st.markdown("""
-        **Objective**: Collect, explore, and preprocess historical sales data for modeling.
+        **Objective**: Analyze and preprocess time series sales data for forecasting.
         **Tasks**:
-        - Collect: Historical sales with features (sales, date, promotions, holidays).
-        - Explore: Trends, seasonality, missing values, outliers, data imbalance.
-        - Preprocess: Handle missing values, duplicates, add time features, scale data.
+        - **Collect**: Load historical sales data (CSV/Parquet) with features like date, sales, promotions, holidays.
+        - **Explore**: Visualize trends, seasonality, missing values, outliers, and data imbalance.
+        - **Preprocess**: Handle missing values, duplicates, outliers, add time features, and scale data.
+        - **Feature Engineer**: Create interaction terms, encode categoricals, and bin numerics.
         **Team**:
         - Belal Khamis: Notebook Outlines, Missing Values
         - Marwa Kotb: Duplicates
@@ -352,29 +414,33 @@ def main():
         - Hoda Magdy: Text Cleaning
         """)
 
-    # File uploaders
+    # Tabs for Train and Test Data
     train_tab, test_tab = st.tabs(["Train Data", "Test Data"])
 
+    # Train Data Tab
     with train_tab:
-        train_file = st.file_uploader("Upload Train Data", type=['csv', 'parquet'], key="train")
+        st.subheader("Train Data Analysis")
+        train_file = st.file_uploader("Upload Train Data (CSV/Parquet)", type=['csv', 'parquet'], key="train")
         if train_file:
             train_df = load_data(train_file, "train")
             if train_df is not None:
                 st.session_state['train_df'] = train_df
+                st.markdown("**Data Preview**")
                 st.dataframe(train_df.head(), height=150)
 
                 with st.form("train_config"):
+                    st.markdown("**Configure Analysis**")
                     date_col = st.selectbox("Date Column", ['None'] + list(train_df.columns), 
                                            index=train_df.columns.tolist().index('date') if 'date' in train_df.columns else 0)
                     date_col = None if date_col == 'None' else date_col
-                    target_col = st.selectbox("Target", train_df.columns, 
+                    target_col = st.selectbox("Target Column", train_df.columns, 
                                              index=train_df.columns.tolist().index('sales') if 'sales' in train_df.columns else 0)
                     numeric_cols, categorical_cols = detect_column_types(train_df, date_col)
                     numeric_cols = st.multiselect("Numeric Columns", train_df.columns, default=numeric_cols)
                     categorical_cols = st.multiselect("Categorical Columns", train_df.columns, default=categorical_cols)
-                    outlier_method = st.selectbox("Outliers", ['None', 'Remove', 'Replace'], key="train_outliers")
+                    outlier_method = st.selectbox("Handle Outliers", ['None', 'Remove', 'Replace'])
                     outlier_method = outlier_method.lower() if outlier_method != 'None' else None
-                    scale = st.checkbox("Scale Numerics")
+                    scale = st.checkbox("Scale Numeric Columns")
                     st.form_submit_button("Apply", on_click=lambda: st.session_state.update({
                         'train_date_col': date_col,
                         'train_target_col': target_col,
@@ -386,7 +452,7 @@ def main():
 
                 with st.form("train_process"):
                     st.markdown("**Process Train Data**")
-                    if st.form_submit_button("Run"):
+                    if st.form_submit_button("Run Analysis"):
                         date_col = st.session_state.get('train_date_col', None)
                         target_col = st.session_state.get('train_target_col', 'sales')
                         numeric_cols = st.session_state.get('train_numeric_cols', detect_column_types(train_df, date_col)[0])
@@ -401,10 +467,10 @@ def main():
                         processed_df, duplicates_removed = preprocess_data(
                             train_df, numeric_cols, categorical_cols, date_col, outlier_method, scale, "train")
                         st.session_state['processed_train'] = processed_df
-                        st.write(f"Processed: {duplicates_removed} duplicates removed, {processed_df.shape[0]} rows remain")
+                        st.write(f"**Preprocessing Results**: {duplicates_removed} duplicates removed, {processed_df.shape[0]} rows remain")
                         st.dataframe(processed_df.head(), height=150)
 
-                # Download processed train data (outside form)
+                # Download Processed Train Data
                 if 'processed_train' in st.session_state:
                     csv_data, mime = get_download_file(st.session_state['processed_train'], "train_processed.csv")
                     if csv_data and mime:
@@ -417,26 +483,30 @@ def main():
                                 key="train_download"
                             )
                         except Exception as e:
-                            st.error(f"Download button failed: {e}")
+                            st.error(f"Download failed: {e}")
 
+    # Test Data Tab
     with test_tab:
-        test_file = st.file_uploader("Upload Test Data", type=['csv', 'parquet'], key="test")
+        st.subheader("Test Data Analysis")
+        test_file = st.file_uploader("Upload Test Data (CSV/Parquet)", type=['csv', 'parquet'], key="test")
         if test_file:
             test_df = load_data(test_file, "test")
             if test_df is not None:
                 st.session_state['test_df'] = test_df
+                st.markdown("**Data Preview**")
                 st.dataframe(test_df.head(), height=150)
 
                 with st.form("test_config"):
+                    st.markdown("**Configure Analysis**")
                     date_col = st.selectbox("Date Column", ['None'] + list(test_df.columns), 
                                            index=test_df.columns.tolist().index('date') if 'date' in test_df.columns else 0)
                     date_col = None if date_col == 'None' else date_col
                     numeric_cols, categorical_cols = detect_column_types(test_df, date_col)
                     numeric_cols = st.multiselect("Numeric Columns", test_df.columns, default=numeric_cols)
                     categorical_cols = st.multiselect("Categorical Columns", test_df.columns, default=categorical_cols)
-                    outlier_method = st.selectbox("Outliers", ['None', 'Remove', 'Replace'], key="test_outliers")
+                    outlier_method = st.selectbox("Handle Outliers", ['None', 'Remove', 'Replace'])
                     outlier_method = outlier_method.lower() if outlier_method != 'None' else None
-                    scale = st.checkbox("Scale Numerics")
+                    scale = st.checkbox("Scale Numeric Columns")
                     st.form_submit_button("Apply", on_click=lambda: st.session_state.update({
                         'test_date_col': date_col,
                         'test_numeric_cols': numeric_cols,
@@ -447,7 +517,7 @@ def main():
 
                 with st.form("test_process"):
                     st.markdown("**Process Test Data**")
-                    if st.form_submit_button("Run"):
+                    if st.form_submit_button("Run Analysis"):
                         date_col = st.session_state.get('test_date_col', None)
                         numeric_cols = st.session_state.get('test_numeric_cols', detect_column_types(test_df, date_col)[0])
                         categorical_cols = st.session_state.get('test_categorical_cols', detect_column_types(test_df, date_col)[1])
@@ -461,10 +531,10 @@ def main():
                         processed_df, duplicates_removed = preprocess_data(
                             test_df, numeric_cols, categorical_cols, date_col, outlier_method, scale, "test")
                         st.session_state['processed_test'] = processed_df
-                        st.write(f"Processed: {duplicates_removed} duplicates removed, {processed_df.shape[0]} rows remain")
+                        st.write(f"**Preprocessing Results**: {duplicates_removed} duplicates removed, {processed_df.shape[0]} rows remain")
                         st.dataframe(processed_df.head(), height=150)
 
-                # Download processed test data (outside form)
+                # Download Processed Test Data
                 if 'processed_test' in st.session_state:
                     csv_data, mime = get_download_file(st.session_state['processed_test'], "test_processed.csv")
                     if csv_data and mime:
@@ -477,12 +547,14 @@ def main():
                                 key="test_download"
                             )
                         except Exception as e:
-                            st.error(f"Download button failed: {e}")
+                            st.error(f"Download failed: {e}")
 
     # Feature Engineering
     if 'processed_train' in st.session_state and 'processed_test' in st.session_state:
-        st.markdown("**Feature Engineering**")
+        st.markdown("---")
+        st.subheader("Feature Engineering")
         with st.form("feature_engineering"):
+            st.markdown("**Generate Features**")
             if st.form_submit_button("Run Feature Engineering"):
                 train_fe, test_fe = engineer_features(
                     st.session_state['processed_train'],
@@ -500,7 +572,7 @@ def main():
                 st.markdown("**Feature Engineered Test Data**")
                 st.dataframe(test_fe.head(), height=150)
 
-        # Download feature-engineered data (outside form)
+        # Download Feature-Engineered Data
         if 'train_fe' in st.session_state:
             train_csv, train_mime = get_download_file(st.session_state['train_fe'], "train_fe.csv")
             if train_csv and train_mime:
@@ -513,7 +585,7 @@ def main():
                         key="train_fe_download"
                     )
                 except Exception as e:
-                    st.error(f"Download button failed: {e}")
+                    st.error(f"Download failed: {e}")
 
         if 'test_fe' in st.session_state:
             test_csv, test_mime = get_download_file(st.session_state['test_fe'], "test_fe.csv")
@@ -527,10 +599,10 @@ def main():
                         key="test_fe_download"
                     )
                 except Exception as e:
-                    st.error(f"Download button failed: {e}")
+                    st.error(f"Download failed: {e}")
 
-    st.divider()
-    st.markdown("**Created with Belal Khamis, Marwa Kotb, Mahmoud Sabry, Mohamed Samy, Hoda Magdy**")
+    st.markdown("---")
+    st.markdown("**Created by Belal Khamis, Marwa Kotb, Mahmoud Sabry, Mohamed Samy, Hoda Magdy**")
 
 if __name__ == "__main__":
     main()
