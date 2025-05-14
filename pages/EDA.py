@@ -116,7 +116,7 @@ def explore_data(df, date_col=None, numeric_cols=None, categorical_cols=None, da
             outliers_zscore = df.iloc[df[col].dropna().index][abs(z_scores) > 3][col]
             st.write(f"{col}: IQR Outliers = {len(outliers_iqr)}, Z-score Outliers = {len(outliers_zscore)}")
 
-def preprocess_data(df, numeric_cols, categorical_cols, date_col=None, type_col=None, handle_outliers=None, scale=False):
+def preprocess_data(df, numeric_cols, categorical_cols, date_col=None, handle_outliers=None, scale=False):
     """Preprocess data: handle missing values, duplicates, outliers, and time features."""
     df_clean = df.copy()
 
@@ -126,27 +126,53 @@ def preprocess_data(df, numeric_cols, categorical_cols, date_col=None, type_col=
             if col in numeric_cols:
                 df_clean[col].fillna(df_clean[col].median(), inplace=True)
             elif col in categorical_cols:
-                df_clean[col].fillna(df_clean[col    # Initialize an empty DataFrame for the categorical columns
-    categorical_df = pd.DataFrame()
+                df_clean[col].fillna(df_clean[col].mode()[0], inplace=True)
+            else:
+                df_clean[col].fillna('Unknown', inplace=True)
 
-    # Iterate over each categorical column
-    for col in categorical_cols:
-        # Create a temporary DataFrame for the current categorical column
-        temp_df = pd.DataFrame()
-        # Apply one-hot encoding to the current categorical column
-        temp_df = pd.get_dummies(df_clean[col], prefix=col, dummy_na=True)
-        # Concatenate the temporary DataFrame with the categorical DataFrame
-        categorical_df = pd.concat([categorical_df, temp_df], axis=1)
-    
-    # Drop the original categorical columns from df_clean
-    df_clean = df_clean.drop(columns=categorical_cols)
-    
-    # Concatenate the numerical DataFrame with the one-hot encoded categorical DataFrame
-    df_clean = pd.concat([df_clean, categorical_df], axis=1)
-    
-    return df_clean
+    # Duplicates
+    initial_rows = df_clean.shape[0]
+    df_clean = df_clean.drop_duplicates()
 
-def engineer_features(df, numeric_cols, categorical_cols, date_col=None, type_col=None):
+    # Outliers
+    if handle_outliers and numeric_cols:
+        for col in numeric_cols:
+            Q1, Q3 = df_clean[col].quantile([0.25, 0.75])
+            IQR = Q3 - Q1
+            lower, upper = Q1 - 1.5 * IQR, Q3 + 1.5 * IQR
+            if handle_outliers == 'remove':
+                df_clean = df_clean[(df_clean[col] >= lower) & (df_clean[col] <= upper)]
+            elif handle_outliers == 'replace':
+                median_value = df_clean[col].median()
+                df_clean[col] = df_clean[col].apply(lambda x: median_value if x < lower or x > upper else x)
+
+    # Time features
+    if date_col and date_col in df_clean.columns:
+        df_clean[date_col] = pd.to_datetime(df_clean[date_col], errors='coerce')
+        df_clean['year'] = df_clean[date_col].dt.year
+        df_clean['month'] = df_clean[date_col].dt.month
+        df_clean['day'] = df_clean[date_col].dt.day
+        df_clean['weekday'] = df_clean[date_col].dt.weekday
+        df_clean['week'] = df_clean[date_col].dt.isocalendar().week
+        df_clean['is_weekend'] = df_clean[date_col].dt.weekday.apply(lambda x: 1 if x >= 5 else 0)
+        df_clean['season'] = pd.cut(df_clean['month'], bins=[0, 3, 6, 9, 12], labels=['Q1', 'Q2', 'Q3', 'Q4'])
+
+    # One-hot encode categorical columns
+    if categorical_cols:
+        df_clean = pd.get_dummies(df_clean, columns=categorical_cols, dummy_na=True)
+
+    # Scale numeric columns
+    if scale and numeric_cols:
+        scaler = StandardScaler()
+        df_clean[numeric_cols] = scaler.fit_transform(df_clean[numeric_cols])
+
+    # Clean text columns
+    text_cols = ['family', 'city', 'state', 'cluster', 'type_y', 'locale', 'locale_name', 'description', 'transferred']
+    df_clean = clean_text_columns(df_clean, text_cols)
+
+    return df_clean, initial_rows - df_clean.shape[0]
+
+def engineer_features(df, numeric_cols, categorical_cols, date_col=None):
     """Engineer features for the dataset."""
     df_fe = df.copy()
 
@@ -158,7 +184,7 @@ def engineer_features(df, numeric_cols, categorical_cols, date_col=None, type_co
 
     # Mean encoding for categorical columns
     for col in ['city', 'state']:
-        if col in df_fe:
+        if col in df_fe and 'sales' in df_fe:
             mean_map = df_fe.groupby(col)['sales'].mean().to_dict()
             df_fe[f'{col}_encoded'] = df_fe[col].map(mean_map)
 
@@ -226,7 +252,7 @@ def main():
             # Configuration
             with st.form(f"{dataset_type}_config"):
                 date_col = st.selectbox("Date Column", ['None'] + list(df.columns), 
-                                      index=df.columns.tolist().index('date') if 'date' in df.columns else 0)
+                                       index=df.columns.tolist().index('date') if 'date' in df.columns else 0)
                 date_col = None if date_col == 'None' else date_col
                 numeric_cols, categorical_cols = detect_column_types(df, date_col)
                 numeric_cols = st.multiselect("Numeric Columns", df.columns, default=numeric_cols)
@@ -256,9 +282,9 @@ def main():
                     explore_data(df, date_col, numeric_cols, categorical_cols, dataset_type)
 
                     # Preprocessing
-                    processed_df = preprocess_data(df, numeric_cols, categorical_cols, date_col, outlier_method, scale)
+                    processed_df, duplicates_removed = preprocess_data(df, numeric_cols, categorical_cols, date_col, outlier_method, scale)
                     st.session_state[f'processed_{dataset_type}'] = processed_df
-                    st.write(f"**Processed**: {processed_df.shape[0]} rows remain")
+                    st.write(f"**Processed**: {duplicates_removed} duplicates removed, {processed_df.shape[0]} rows remain")
                     st.dataframe(processed_df.head(), height=150)
 
                     # Feature Engineering
