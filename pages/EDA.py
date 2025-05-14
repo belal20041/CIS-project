@@ -6,6 +6,8 @@ import seaborn as sns
 import missingno as msno
 from scipy.stats import zscore
 from sklearn.preprocessing import StandardScaler
+from statsmodels.tsa.seasonal import seasonal_decompose
+from statsmodels.graphics.tsaplots import plot_acf
 from io import BytesIO
 
 st.set_page_config(page_title="Milestone 1: Data Analysis", layout="wide")
@@ -55,7 +57,7 @@ def clean_text_columns(df, columns):
     return df_clean
 
 def explore_data(df, date_col=None, numeric_cols=None, categorical_cols=None, dataset_type="train"):
-    """Perform EDA with key visualizations."""
+    """Perform EDA with key visualizations, including time series and imbalance."""
     st.markdown(f"### {dataset_type.capitalize()} Data Insights")
     col1, col2 = st.columns(2)
     with col1:
@@ -73,9 +75,12 @@ def explore_data(df, date_col=None, numeric_cols=None, categorical_cols=None, da
     st.pyplot(fig)
     plt.close(fig)
 
-    # Sales trends
+    # Time series visualizations
     if date_col and 'sales' in df.columns:
         df[date_col] = pd.to_datetime(df[date_col], errors='coerce')
+        df = df.sort_values(date_col)
+
+        # Sales trends
         st.markdown("**Sales Trends**")
         fig, ax = plt.subplots(figsize=(8, 3))
         sns.lineplot(x=date_col, y='sales', data=df, ax=ax)
@@ -89,6 +94,39 @@ def explore_data(df, date_col=None, numeric_cols=None, categorical_cols=None, da
         st.markdown("**Monthly Seasonality**")
         fig, ax = plt.subplots(figsize=(8, 3))
         sns.boxplot(x='month', y='sales', data=df, ax=ax)
+        st.pyplot(fig)
+        plt.close(fig)
+
+        # Rolling mean and std
+        st.markdown("**Rolling Mean and Std (30-day window)**")
+        rolling = df.set_index(date_col)['sales'].rolling(window=30).agg(['mean', 'std']).dropna()
+        fig, ax = plt.subplots(figsize=(8, 3))
+        rolling['mean'].plot(ax=ax, label='Rolling Mean')
+        rolling['std'].plot(ax=ax, label='Rolling Std', alpha=0.5)
+        ax.legend()
+        plt.xticks(rotation=45)
+        st.pyplot(fig)
+        plt.close(fig)
+
+        # Seasonal decomposition
+        st.markdown("**Seasonal Decomposition (Yearly)**")
+        try:
+            df_ts = df.set_index(date_col)['sales'].resample('M').sum()
+            decomp = seasonal_decompose(df_ts, model='additive', period=12)
+            fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(8, 6))
+            decomp.trend.plot(ax=ax1, title='Trend')
+            decomp.seasonal.plot(ax=ax2, title='Seasonal')
+            decomp.resid.plot(ax=ax3, title='Residual')
+            plt.tight_layout()
+            st.pyplot(fig)
+            plt.close(fig)
+        except Exception as e:
+            st.warning(f"Seasonal decomposition failed: {e}")
+
+        # Autocorrelation
+        st.markdown("**Autocorrelation Plot**")
+        fig, ax = plt.subplots(figsize=(8, 3))
+        plot_acf(df['sales'].dropna(), lags=30, ax=ax)
         st.pyplot(fig)
         plt.close(fig)
 
@@ -145,6 +183,18 @@ def explore_data(df, date_col=None, numeric_cols=None, categorical_cols=None, da
             z_scores = zscore(df[col].dropna())
             outliers_zscore = df.iloc[df[col].dropna().index][abs(z_scores) > 3][col]
             st.write(f"{col}: IQR Outliers = {len(outliers_iqr)}, Z-score Outliers = {len(outliers_zscore)}")
+
+    # Data imbalance for categorical columns
+    st.markdown("**Categorical Data Imbalance**")
+    for col in ['family', 'city', 'transferred'] if categorical_cols else []:
+        if col in df.columns:
+            st.markdown(f"**Distribution of {col.capitalize()}**")
+            fig, ax = plt.subplots(figsize=(8, 3))
+            sns.countplot(x=col, data=df, ax=ax, order=df[col].value_counts().index)
+            ax.set_title(f"Distribution of {col.capitalize()}")
+            plt.xticks(rotation=45)
+            st.pyplot(fig)
+            plt.close(fig)
 
 def preprocess_data(df, numeric_cols, categorical_cols, date_col=None, handle_outliers=None, scale=False, dataset_type="train"):
     """Preprocess data: handle missing values, duplicates, outliers, and time features."""
@@ -274,10 +324,16 @@ def engineer_features(train_df, test_df, numeric_cols, categorical_cols, target=
 
 def get_download_file(df, filename):
     """Generate downloadable CSV file."""
-    buf = BytesIO()
-    df.to_csv(buf, index=False)
-    buf.seek(0)
-    return buf.getvalue(), 'text/csv'
+    try:
+        if df is None or df.empty:
+            raise ValueError("Dataframe is empty or None")
+        buf = BytesIO()
+        df.to_csv(buf, index=False)
+        buf.seek(0)
+        return buf.getvalue(), 'text/csv'
+    except Exception as e:
+        st.error(f"Failed to generate download file: {e}")
+        return None, None
 
 def main():
     """Main Streamlit app."""
@@ -286,7 +342,7 @@ def main():
         **Objective**: Collect, explore, and preprocess historical sales data for modeling.
         **Tasks**:
         - Collect: Historical sales with features (sales, date, promotions, holidays).
-        - Explore: Trends, seasonality, missing values, outliers.
+        - Explore: Trends, seasonality, missing values, outliers, data imbalance.
         - Preprocess: Handle missing values, duplicates, add time features, scale data.
         **Team**:
         - Belal Khamis: Notebook Outlines, Missing Values
@@ -352,13 +408,17 @@ def main():
 
                         # Download
                         csv_data, mime = get_download_file(processed_df, "train_processed.csv")
-                        st.download_button(
-                            label="Download Processed Train Data",
-                            data=csv_data,
-                            file_name="train_processed.csv",
-                            mime=mime,
-                            key="train_download"
-                        )
+                        if csv_data and mime:
+                            try:
+                                st.download_button(
+                                    label="Download Processed Train Data",
+                                    data=csv_data,
+                                    file_name="train_processed.csv",
+                                    mime=mime,
+                                    key="train_download"
+                                )
+                            except Exception as e:
+                                st.error(f"Download button failed: {e}")
 
     with test_tab:
         test_file = st.file_uploader("Upload Test Data", type=['csv', 'parquet'], key="test")
@@ -407,15 +467,19 @@ def main():
 
                         # Download
                         csv_data, mime = get_download_file(processed_df, "test_processed.csv")
-                        st.download_button(
-                            label="Download Processed Test Data",
-                            data=csv_data,
-                            file_name="test_processed.csv",
-                            mime=mime,
-                            key="test_download"
-                        )
+                        if csv_data and mime:
+                            try:
+                                st.download_button(
+                                    label="Download Processed Test Data",
+                                    data=csv_data,
+                                    file_name="test_processed.csv",
+                                    mime=mime,
+                                    key="test_download"
+                                )
+                            except Exception as e:
+                                st.error(f"Download button failed: {e}")
 
-    # Feature Engineering (only if both datasets are processed)
+    # Feature Engineering
     if 'processed_train' in st.session_state and 'processed_test' in st.session_state:
         st.markdown("**Feature Engineering**")
         if st.button("Run Feature Engineering"):
@@ -432,24 +496,32 @@ def main():
             st.markdown("**Feature Engineered Train Data**")
             st.dataframe(train_fe.head(), height=150)
             train_csv, train_mime = get_download_file(train_fe, "train_fe.csv")
-            st.download_button(
-                label="Download Feature Engineered Train Data",
-                data=train_csv,
-                file_name="train_fe.csv",
-                mime=train_mime,
-                key="train_fe_download"
-            )
+            if train_csv and train_mime:
+                try:
+                    st.download_button(
+                        label="Download Feature Engineered Train Data",
+                        data=train_csv,
+                        file_name="train_fe.csv",
+                        mime=train_mime,
+                        key="train_fe_download"
+                    )
+                except Exception as e:
+                    st.error(f"Download button failed: {e}")
 
             st.markdown("**Feature Engineered Test Data**")
             st.dataframe(test_fe.head(), height=150)
             test_csv, test_mime = get_download_file(test_fe, "test_fe.csv")
-            st.download_button(
-                label="Download Feature Engineered Test Data",
-                data=test_csv,
-                file_name="test_fe.csv",
-                mime=test_mime,
-                key="test_fe_download"
-            )
+            if test_csv and test_mime:
+                try:
+                    st.download_button(
+                        label="Download Feature Engineered Test Data",
+                        data=test_csv,
+                        file_name="test_fe.csv",
+                        mime=test_mime,
+                        key="test_fe_download"
+                    )
+                except Exception as e:
+                    st.error(f"Download button failed: {e}")
 
     st.divider()
     st.markdown("**Created with Belal Khamis, Marwa Kotb, Mahmoud Sabry, Mohamed Samy, Hoda Magdy**")
