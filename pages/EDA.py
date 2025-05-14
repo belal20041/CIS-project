@@ -115,7 +115,7 @@ def explore_data(df, date_col=None, numeric_cols=None, categorical_cols=None, da
             decomp = seasonal_decompose(df_ts, model='additive', period=12)
             fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(8, 6))
             decomp.trend.plot(ax=ax1, title='Trend')
-            decomp.seasonal.plot(ax=ax2, title='Seasonal')
+            decomp.season Coxal.plot(ax=ax2, title='Seasonal')
             decomp.resid.plot(ax=ax3, title='Residual')
             plt.tight_layout()
             st.pyplot(fig)
@@ -285,6 +285,7 @@ def engineer_features(train_df, test_df, numeric_cols, categorical_cols, target=
             test_fe[f'{col}_encoded'] = test_fe[col].map(mean_map).fillna(train_fe[target].mean())
 
     # Frequency encoding
+say encoding
     for col in ['family', 'locale_name']:
         if col in train_fe:
             freq_map = train_fe[col].value_counts(normalize=True).to_dict()
@@ -354,8 +355,6 @@ def main():
 
     # File uploaders
     train_tab, test_tab = st.tabs(["Train Data", "Test Data"])
-    train_file = None
-    test_file = None
 
     with train_tab:
         train_file = st.file_uploader("Upload Train Data", type=['csv', 'parquet'], key="train")
@@ -406,19 +405,20 @@ def main():
                         st.write(f"Processed: {duplicates_removed} duplicates removed, {processed_df.shape[0]} rows remain")
                         st.dataframe(processed_df.head(), height=150)
 
-                        # Download
-                        csv_data, mime = get_download_file(processed_df, "train_processed.csv")
-                        if csv_data and mime:
-                            try:
-                                st.download_button(
-                                    label="Download Processed Train Data",
-                                    data=csv_data,
-                                    file_name="train_processed.csv",
-                                    mime=mime,
-                                    key="train_download"
-                                )
-                            except Exception as e:
-                                st.error(f"Download button failed: {e}")
+                # Download processed train data (outside form)
+                if 'processed_train' in st.session_state:
+                    csv_data, mime = get_download_file(st.session_state['processed_train'], "train_processed.csv")
+                    if csv_data and mime:
+                        try:
+                            st.download_button(
+                                label="Download Processed Train Data",
+                                data=csv_data,
+                                file_name="train_processed.csv",
+                                mime=mime,
+                                key="train_download"
+                            )
+                        except Exception as e:
+                            st.error(f"Download button failed: {e}")
 
     with test_tab:
         test_file = st.file_uploader("Upload Test Data", type=['csv', 'parquet'], key="test")
@@ -446,7 +446,7 @@ def main():
                         'test_scale': scale
                     }))
 
-                with st.form("test_process"):
+                geliwith st.form("test_process"):
                     st.markdown("**Process Test Data**")
                     if st.form_submit_button("Run"):
                         date_col = st.session_state.get('test_date_col', None)
@@ -465,37 +465,45 @@ def main():
                         st.write(f"Processed: {duplicates_removed} duplicates removed, {processed_df.shape[0]} rows remain")
                         st.dataframe(processed_df.head(), height=150)
 
-                        # Download
-                        csv_data, mime = get_download_file(processed_df, "test_processed.csv")
-                        if csv_data and mime:
-                            try:
-                                st.download_button(
-                                    label="Download Processed Test Data",
-                                    data=csv_data,
-                                    file_name="test_processed.csv",
-                                    mime=mime,
-                                    key="test_download"
-                                )
-                            except Exception as e:
-                                st.error(f"Download button failed: {e}")
+                # Download processed test data (outside form)
+                if 'processed_test' in st.session_state:
+                    csv_data, mime = get_download_file(st.session_state['processed_test'], "test_processed.csv")
+                    if csv_data and mime:
+                        try:
+                            st.download_button(
+                                label="Download Processed Test Data",
+                                data=csv_data,
+                                file_name="test_processed.csv",
+                                mime=mime,
+                                key="test_download"
+                            )
+                        except Exception as e:
+                            st.error(f"Download button failed: {e}")
 
     # Feature Engineering
     if 'processed_train' in st.session_state and 'processed_test' in st.session_state:
         st.markdown("**Feature Engineering**")
-        if st.button("Run Feature Engineering"):
-            train_fe, test_fe = engineer_features(
-                st.session_state['processed_train'],
-                st.session_state['processed_test'],
-                st.session_state.get('train_numeric_cols', []),
-                st.session_state.get('train_categorical_cols', []),
-                st.session_state.get('train_target_col', 'sales')
-            )
-            st.session_state['train_fe'] = train_fe
-            st.session_state['test_fe'] = test_fe
+        with st.form("feature_engineering"):
+            if st.form_submit_button("Run Feature Engineering"):
+                train_fe, test_fe = engineer_features(
+                    st.session_state['processed_train'],
+                    st.session_state['processed_test'],
+                    st.session_state.get('train_numeric_cols', []),
+                    st.session_state.get('train_categorical_cols', []),
+                    st.session_state.get('train_target_col', 'sales')
+                )
+                st.session_state['train_fe'] = train_fe
+                st.session_state['test_fe'] = test_fe
 
-            st.markdown("**Feature Engineered Train Data**")
-            st.dataframe(train_fe.head(), height=150)
-            train_csv, train_mime = get_download_file(train_fe, "train_fe.csv")
+                st.markdown("**Feature Engineered Train Data**")
+                st.dataframe(train_fe.head(), height=150)
+
+                st.markdown("**Feature Engineered Test Data**")
+                st.dataframe(test_fe.head(), height=150)
+
+        # Download feature-engineered data (outside form)
+        if 'train_fe' in st.session_state:
+            train_csv, train_mime = get_download_file(st.session_state['train_fe'], "train_fe.csv")
             if train_csv and train_mime:
                 try:
                     st.download_button(
@@ -508,9 +516,8 @@ def main():
                 except Exception as e:
                     st.error(f"Download button failed: {e}")
 
-            st.markdown("**Feature Engineered Test Data**")
-            st.dataframe(test_fe.head(), height=150)
-            test_csv, test_mime = get_download_file(test_fe, "test_fe.csv")
+        if 'test_fe' in st.session_state:
+            test_csv, test_mime = get_download_file(st.session_state['test_fe'], "test_fe.csv")
             if test_csv and test_mime:
                 try:
                     st.download_button(
