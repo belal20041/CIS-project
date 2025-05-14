@@ -115,7 +115,7 @@ def explore_data(df, date_col=None, numeric_cols=None, categorical_cols=None, da
             decomp = seasonal_decompose(df_ts, model='additive', period=12)
             fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(8, 6))
             decomp.trend.plot(ax=ax1, title='Trend')
-            decomp.season Coxal.plot(ax=ax2, title='Seasonal')
+            decomp.seasonal.plot(ax=ax2, title='Seasonal')
             decomp.resid.plot(ax=ax3, title='Residual')
             plt.tight_layout()
             st.pyplot(fig)
@@ -285,7 +285,6 @@ def engineer_features(train_df, test_df, numeric_cols, categorical_cols, target=
             test_fe[f'{col}_encoded'] = test_fe[col].map(mean_map).fillna(train_fe[target].mean())
 
     # Frequency encoding
-say encoding
     for col in ['family', 'locale_name']:
         if col in train_fe:
             freq_map = train_fe[col].value_counts(normalize=True).to_dict()
@@ -446,7 +445,7 @@ def main():
                         'test_scale': scale
                     }))
 
-                geliwith st.form("test_process"):
+                with st.form("test_process"):
                     st.markdown("**Process Test Data**")
                     if st.form_submit_button("Run"):
                         date_col = st.session_state.get('test_date_col', None)
