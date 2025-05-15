@@ -7,7 +7,17 @@ import tempfile
 from PIL import Image
 from sklearn.preprocessing import StandardScaler, LabelEncoder
 from sklearn.metrics import mean_squared_error, mean_absolute_error
-from sklearn.linear_model import Ridge
+from statsmodels.tsa.arima.model import ARIMA
+from statsmodels.tsa.statespace.sarimax import SARIMAX
+from prophet import Prophet
+from xgboost import XGBRegressor
+from lightgbm import LGBMRegressor
+from tbats import TBATS
+from statsmodels.tsa.holtwinters import ExponentialSmoothing
+from statsforecast.models import Theta, STL
+import tensorflow as tf
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, GRU, Dense
 import joblib
 import psutil
 from datetime import datetime
@@ -28,6 +38,12 @@ if 'sub' not in st.session_state:
     st.session_state.sub = None
 if 'feature_cols' not in st.session_state:
     st.session_state.feature_cols = None
+if 'scaler' not in st.session_state:
+    st.session_state.scaler = None
+if 'le_store' not in st.session_state:
+    st.session_state.le_store = None
+if 'le_family' not in st.session_state:
+    st.session_state.le_family = None
 
 # Tabs
 training_tab, prediction_tab, specific_prediction_tab, forecasting_tab = st.tabs(["Training", "Prediction", "Specific Date Prediction", "Forecasting"])
@@ -36,7 +52,7 @@ training_tab, prediction_tab, specific_prediction_tab, forecasting_tab = st.tabs
 TRAIN_END = '2017-07-15'
 VAL_END = '2017-08-15'
 
-# Custom MAPE to avoid division by zero
+# Custom MAPE
 def clipped_mape(y_true, y_pred):
     y_true, y_pred = np.array(y_true), np.array(y_pred)
     mask = y_true > 0
@@ -52,7 +68,7 @@ def load_and_process_data(train_file, test_file, sub_file):
     test = pd.read_csv(test_file)
     sub = pd.read_csv(sub_file)
     
-    # Parse dates with flexible format
+    # Parse dates
     train['date'] = pd.to_datetime(train['date'], errors='coerce')
     test['date'] = pd.to_datetime(test['date'], errors='coerce')
     train = train.dropna(subset=['date'])
@@ -72,14 +88,15 @@ def load_and_process_data(train_file, test_file, sub_file):
     combined = combined.astype({'store_nbr': 'int32', 'family': 'category', 'date': 'datetime64[ns]', 
                                'sales': 'float32', 'onpromotion': 'int32', 'is_train': 'int8'})
     
-    # Handle missing sales with interpolation
-    grouped = combined.groupby(['store_nbr', 'family'])
-    processed_groups = []
-    for (store_nbr, family), group in grouped:
-        group['sales'] = group['sales'].interpolate(method='linear', limit_direction='both').fillna(0).astype('float32')
-        group['onpromotion'] = group['onpromotion'].fillna(0).astype('int32')
-        processed_groups.append(group)
-    combined = pd.concat(processed_groups).sort_values(['store_nbr', 'family', 'date'])
+    # Ensure complete date range per store-family
+    date_range = pd.date_range(start=combined['date'].min(), end=combined['date'].max(), freq='D')
+    store_families = combined[['store_nbr', 'family']].drop_duplicates()
+    index = pd.MultiIndex.from_product([store_families['store_nbr'], store_families['family'], date_range], 
+                                       names=['store_nbr', 'family', 'date'])
+    combined = combined.set_index(['store_nbr', 'family', 'date']).reindex(index).reset_index()
+    combined['sales'] = combined['sales'].interpolate(method='linear', limit_direction='both').fillna(0).astype('float32')
+    combined['onpromotion'] = combined['onpromotion'].fillna(0).astype('int32')
+    combined['is_train'] = combined['is_train'].fillna(0).astype('int8')
     
     # Add features
     combined['day'] = combined['date'].dt.day.astype('int8')
@@ -117,6 +134,15 @@ def load_and_process_data(train_file, test_file, sub_file):
     
     return train_set, val_set, test, sub, feature_cols, scaler, le_store, le_family
 
+# Prepare sequence data for LSTM/GRU
+def prepare_sequence_data(group, seq_length=7):
+    data = group['sales'].values
+    X, y = [], []
+    for i in range(len(data) - seq_length):
+        X.append(data[i:i + seq_length])
+        y.append(data[i + seq_length])
+    return np.array(X), np.array(y)
+
 # Training Tab
 with training_tab:
     st.header("Train Forecasting Models")
@@ -128,8 +154,9 @@ with training_tab:
     sub_file = st.file_uploader("Upload Submission CSV", type="csv", key="uploader_sub")
     
     # Model selection
-    models = ["Naive", "Seasonal Naive", "Moving Average", "Ridge Regression"]
-    selected_models = st.multiselect("Select Models to Train", models, default=["Naive"])
+    models = ["ARIMA", "SARIMA", "Prophet", "XGBoost", "LightGBM", "LSTM", "GRU", 
+              "ETS", "TBATS", "Holt-Winters", "Theta", "STL"]
+    selected_models = st.multiselect("Select Models to Train", models, default=["ARIMA"])
     
     # Train button
     train_button = st.button("Generate Predictions")
@@ -153,78 +180,112 @@ with training_tab:
             for model_name in selected_models:
                 st.write(f"Generating predictions for {model_name}...")
                 temp_dir = tempfile.gettempdir()
-                val_dates = pd.date_range('2017-07-16', '2017-08-15')
                 pred_dict = {}
-                actuals = []
-                preds = []
                 
-                # Initialize model_results
-                st.session_state.model_results[model_name] = {
-                    'metrics': None,
-                    'plot_path': None,
-                    'y_val': None,
-                    'y_pred': None
-                }
-                
-                if model_name in ["Naive", "Seasonal Naive", "Moving Average"]:
-                    for (store, family), group in val_set.groupby(['store_nbr', 'family']):
-                        train_group = train_set[(train_set['store_nbr'] == store) & (train_set['family'] == family)]
-                        group_sales = group['sales'].values
-                        if not train_group.empty:
-                            if model_name == "Naive":
-                                last_sale = train_group['sales'].iloc[-1]
-                                pred = np.full(len(group_sales), last_sale)
-                            elif model_name == "Seasonal Naive":
-                                last_week = train_group['sales'].tail(7).values if len(train_group) >= 7 else np.full(7, train_group['sales'].mean())
-                                pred = np.tile(last_week, (len(group_sales) // 7) + 1)[:len(group_sales)]
-                            elif model_name == "Moving Average":
-                                window = min(7, len(train_group))
-                                ma_value = train_group['sales'].tail(window).mean()
-                                pred = np.full(len(group_sales), ma_value)
-                        else:
-                            pred = np.zeros(len(group_sales))
-                        pred_dict[(store, family)] = pred.tolist()
-                        actuals.extend(group_sales)
-                        preds.extend(pred)
-                
-                elif model_name == "Ridge Regression":
-                    X_train = train_set[feature_cols]
-                    y_train = np.log1p(train_set['sales'].clip(0))
-                    X_val = val_set[feature_cols]
-                    y_val = val_set['sales']
-                    model = Ridge(alpha=1.0)
-                    model.fit(X_train, y_train)
-                    y_pred_log = model.predict(X_val)
-                    y_pred = np.expm1(y_pred_log).clip(0)
-                    actuals = y_val.values
-                    preds = y_pred
-                    for (store, family), group in val_set.groupby(['store_nbr', 'family']):
-                        mask = val_set.index.isin(group.index)
-                        pred_dict[(store, family)] = y_pred[mask].tolist()
+                for (store, family), group in val_set.groupby(['store_nbr', 'family']):
+                    train_group = train_set[(train_set['store_nbr'] == store) & (train_set['family'] == family)]
+                    val_group = group.sort_values('date')
+                    dates = val_group['date'].values
+                    actuals = val_group['sales'].values
+                    preds = np.zeros(len(actuals))
                     
-                    # Save model weights as model.pt
-                    model_path = os.path.join(temp_dir, "model.pt")
-                    joblib.dump(model, model_path)
-                    st.session_state.model_results[model_name]['model_path'] = model_path
+                    if not train_group.empty and len(train_group) >= 7:
+                        if model_name == "ARIMA":
+                            model = ARIMA(train_group['sales'], order=(5,1,0))
+                            fit = model.fit()
+                            preds = fit.forecast(steps=len(actuals))
+                        
+                        elif model_name == "SARIMA":
+                            model = SARIMAX(train_group['sales'], order=(1,1,1), seasonal_order=(1,1,1,7))
+                            fit = model.fit(disp=False)
+                            preds = fit.forecast(steps=len(actuals))
+                        
+                        elif model_name == "Prophet":
+                            df = train_group[['date', 'sales']].rename(columns={'date': 'ds', 'sales': 'y'})
+                            model = Prophet(yearly_seasonality=True, weekly_seasonality=True, daily_seasonality=True)
+                            model.fit(df)
+                            future = pd.DataFrame({'ds': val_group['date']})
+                            forecast = model.predict(future)
+                            preds = forecast['yhat'].values
+                        
+                        elif model_name in ["XGBoost", "LightGBM"]:
+                            X_train = train_group[feature_cols]
+                            y_train = train_group['sales']
+                            X_val = val_group[feature_cols]
+                            if model_name == "XGBoost":
+                                model = XGBRegressor(n_estimators=100, learning_rate=0.1)
+                            else:
+                                model = LGBMRegressor(n_estimators=100, learning_rate=0.1)
+                            model.fit(X_train, y_train)
+                            preds = model.predict(X_val)
+                            joblib.dump(model, os.path.join(temp_dir, f"{model_name.lower()}_{store}_{family}.pt"))
+                        
+                        elif model_name in ["LSTM", "GRU"]:
+                            X, y = prepare_sequence_data(train_group, seq_length=7)
+                            if len(X) > 0:
+                                X = X.reshape((X.shape[0], X.shape[1], 1))
+                                model = Sequential([
+                                    (LSTM if model_name == "LSTM" else GRU)(50, input_shape=(7, 1), return_sequences=False),
+                                    Dense(1)
+                                ])
+                                model.compile(optimizer='adam', loss='mse')
+                                model.fit(X, y, epochs=10, batch_size=32, verbose=0)
+                                last_seq = train_group['sales'].tail(7).values.reshape(1, 7, 1)
+                                preds = []
+                                for _ in range(len(actuals)):
+                                    pred = model.predict(last_seq, verbose=0)[0,0]
+                                    preds.append(pred)
+                                    last_seq = np.roll(last_seq, -1)
+                                    last_seq[0, -1, 0] = pred
+                                preds = np.array(preds)
+                                model.save(os.path.join(temp_dir, f"{model_name.lower()}_{store}_{family}.pt"))
+                        
+                        elif model_name == "ETS":
+                            model = ExponentialSmoothing(train_group['sales'], trend='add', seasonal='add', seasonal_periods=7)
+                            fit = model.fit()
+                            preds = fit.forecast(steps=len(actuals))
+                        
+                        elif model_name == "TBATS":
+                            model = TBATS(seasonal_periods=[7, 365.25])
+                            fit = model.fit(train_group['sales'])
+                            preds = fit.forecast(steps=len(actuals))
+                        
+                        elif model_name == "Holt-Winters":
+                            model = ExponentialSmoothing(train_group['sales'], trend='add', seasonal='mul', seasonal_periods=7)
+                            fit = model.fit()
+                            preds = fit.forecast(steps=len(actuals))
+                        
+                        elif model_name == "Theta":
+                            model = Theta(seasonality_period=7)
+                            fit = model.fit(y=train_group['sales'].values)
+                            preds = fit.forecast(h=len(actuals))['mean']
+                        
+                        elif model_name == "STL":
+                            model = STL(seasonality_period=7)
+                            fit = model.fit(y=train_group['sales'].values)
+                            preds = fit.forecast(h=len(actuals))['mean']
+                    
+                    preds = np.clip(preds, 0, None)
+                    pred_dict[(store, family)] = {'dates': dates, 'actuals': actuals, 'preds': preds}
                 
-                # Update model_results
-                st.session_state.model_results[model_name]['y_val'] = actuals
-                st.session_state.model_results[model_name]['y_pred'] = pred_dict
+                # Aggregate metrics
+                all_actuals = []
+                all_preds = []
+                for key, data in pred_dict.items():
+                    all_actuals.extend(data['actuals'])
+                    all_preds.extend(data['preds'])
                 
-                # Compute metrics
-                actual = np.clip(actuals, 0, None)
-                predicted = np.clip(preds, 0, None)
                 metrics = {
-                    'rmsle': np.sqrt(mean_squared_error(np.log1p(actual), np.log1p(predicted))),
-                    'rmse': np.sqrt(mean_squared_error(actual, predicted)),
-                    'mae': mean_absolute_error(actual, predicted),
-                    'mape': clipped_mape(actual, predicted)
+                    'rmsle': np.sqrt(mean_squared_error(np.log1p(all_actuals), np.log1p(all_preds))),
+                    'rmse': np.sqrt(mean_squared_error(all_actuals, all_preds)),
+                    'mae': mean_absolute_error(all_actuals, all_preds),
+                    'mape': clipped_mape(all_actuals, all_preds)
                 }
                 
-                # Plot
+                # Plot aggregate predictions
                 plt.figure(figsize=(10, 5))
-                plt.plot(val_dates[:len(actuals[:100])], actuals[:100], label='Actual')
-                plt.plot(val_dates[:len(preds[:100])], preds[:100], label='Predicted')
+                plt.plot(dates[:100], all_actuals[:100], label='Actual')
+                plt.plot(dates[:100], all_preds[:100], label='Predicted')
                 plt.title(f"{model_name} Predictions")
                 plt.xlabel("Date")
                 plt.ylabel("Sales")
@@ -236,8 +297,11 @@ with training_tab:
                 plt.close()
                 
                 # Update results
-                st.session_state.model_results[model_name]['metrics'] = metrics
-                st.session_state.model_results[model_name]['plot_path'] = plot_path
+                st.session_state.model_results[model_name] = {
+                    'metrics': metrics,
+                    'plot_path': plot_path,
+                    'pred_dict': pred_dict
+                }
                 
                 # Display metrics
                 st.write(f"### {model_name} Metrics")
@@ -266,7 +330,7 @@ with prediction_tab:
         st.subheader("Visualize Predictions vs Actual")
         store_nbr = st.selectbox("Select Store Number", store_nbrs, key="viz_store")
         family = st.selectbox("Select Product Family", families, key="viz_family")
-        selected_models = st.multiselect("Select Models to Visualize", models, default=["Naive"], key="viz_models")
+        selected_models = st.multiselect("Select Models to Visualize", models, default=["ARIMA"], key="viz_models")
         
         if selected_models:
             for model_name in selected_models:
@@ -274,49 +338,43 @@ with prediction_tab:
                 if model_name in st.session_state.model_results:
                     result = st.session_state.model_results[model_name]
                     metrics = result['metrics']
+                    pred_dict = result['pred_dict']
                     
-                    # Filter validation set
-                    val_set = st.session_state.val_set
-                    mask = (val_set['store_nbr'] == store_nbr) & (val_set['family'] == family)
-                    if mask.sum() > 0:
-                        group = val_set[mask].sort_values('date')
-                        actual = group['sales'].values
-                        dates = group['date'].values
+                    # Get predictions for store-family
+                    key = (store_nbr, family)
+                    if key in pred_dict:
+                        data = pred_dict[key]
+                        dates = data['dates']
+                        actual = data['actuals']
+                        pred = data['preds']
                         
-                        # Get predictions
-                        key = (store_nbr, family)
-                        pred = result['y_pred'].get(key)
-                        if pred is not None and len(pred) > 0:
-                            pred = np.array(pred)
-                            # Plot
-                            plt.figure(figsize=(10, 5))
-                            plt.plot(dates[:100], actual[:100], label='Actual', color='blue')
-                            plt.plot(dates[:100], pred[:100], label='Predicted', color='orange')
-                            plt.title(f"{model_name} Predictions: Store {store_nbr}, Family {family}")
-                            plt.xlabel("Date")
-                            plt.ylabel("Sales")
-                            plt.legend()
-                            plt.xticks(rotation=45)
-                            plt.tight_layout()
-                            plot_path = os.path.join(tempfile.gettempdir(), f"{model_name.lower()}_custom_pred.png")
-                            plt.savefig(plot_path)
-                            plt.close()
-                            
-                            # Display plot
-                            image = Image.open(plot_path)
-                            st.image(image, caption=f"{model_name} Predictions vs Actual", use_column_width=True)
-                            
-                            # Display metrics
-                            st.write("### Metrics")
-                            col1, col2, col3, col4 = st.columns(4)
-                            col1.metric("RMSLE", f"{metrics['rmsle']:.4f}")
-                            col2.metric("RMSE", f"{metrics['rmse']:.4f}")
-                            col3.metric("MAE", f"{metrics['mae']:.4f}")
-                            col4.metric("MAPE (%)", f"{metrics['mape']:.2f}")
-                        else:
-                            st.write("Predictions not available for this store-family combination.")
+                        # Plot
+                        plt.figure(figsize=(10, 5))
+                        plt.plot(dates[:100], actual[:100], label='Actual', color='blue')
+                        plt.plot(dates[:100], pred[:100], label='Predicted', color='orange')
+                        plt.title(f"{model_name} Predictions: Store {store_nbr}, Family {family}")
+                        plt.xlabel("Date")
+                        plt.ylabel("Sales")
+                        plt.legend()
+                        plt.xticks(rotation=45)
+                        plt.tight_layout()
+                        plot_path = os.path.join(tempfile.gettempdir(), f"{model_name.lower()}_custom_pred.png")
+                        plt.savefig(plot_path)
+                        plt.close()
+                        
+                        # Display plot
+                        image = Image.open(plot_path)
+                        st.image(image, caption=f"{model_name} Predictions vs Actual", use_column_width=True)
+                        
+                        # Display metrics
+                        st.write("### Metrics")
+                        col1, col2, col3, col4 = st.columns(4)
+                        col1.metric("RMSLE", f"{metrics['rmsle']:.4f}")
+                        col2.metric("RMSE", f"{metrics['rmse']:.4f}")
+                        col3.metric("MAE", f"{metrics['mae']:.4f}")
+                        col4.metric("MAPE (%)", f"{metrics['mape']:.2f}")
                     else:
-                        st.write("No validation data for this store-family combination.")
+                        st.write("Predictions not available for this store-family combination.")
                 else:
                     st.write("Model not trained. Please generate predictions in the Training tab.")
     else:
@@ -327,7 +385,7 @@ with specific_prediction_tab:
     st.header("Predict Sales for Specific Date")
     
     if st.session_state.train_set is not None:
-        # Get store numbers and families
+        # Get timelines
         store_nbrs = sorted(st.session_state.train_set['store_nbr'].unique())
         families = sorted(st.session_state.train_set['family'].unique())
         
@@ -389,34 +447,72 @@ with specific_prediction_tab:
                 spec_df[st.session_state.feature_cols] = st.session_state.scaler.transform(spec_df[st.session_state.feature_cols]).astype('float32')
                 
                 # Generate predictions
-                for model_name in models:
+                for model_name in selected_models:
                     if model_name in st.session_state.model_results:
                         st.subheader(f"{model_name} Prediction")
-                        result = st.session_state.model_results[model_name]
-                        if model_name == "Ridge Regression":
-                            model_path = result.get('model_path')
-                            model = joblib.load(model_path)
-                            X_spec = spec_df[st.session_state.feature_cols]
-                            predictions_log = model.predict(X_spec)
-                            predictions = np.expm1(predictions_log).clip(0)
-                            spec_df['predicted_sales'] = predictions
+                        if model_name in ["XGBoost", "LightGBM"]:
+                            model_path = os.path.join(tempfile.gettempdir(), f"{model_name.lower()}_{store_nbr}_{family}.pt")
+                            if os.path.exists(model_path):
+                                model = joblib.load(model_path)
+                                X_spec = spec_df[st.session_state.feature_cols]
+                                predictions = model.predict(X_spec).clip(0)
+                                spec_df['predicted_sales'] = predictions
+                            else:
+                                spec_df['predicted_sales'] = np.zeros(len(spec_df))
+                        elif model_name in ["LSTM", "GRU"]:
+                            model_path = os.path.join(tempfile.gettempdir(), f"{model_name.lower()}_{store_nbr}_{family}.pt")
+                            if os.path.exists(model_path):
+                                model = tf.keras.models.load_model(model_path)
+                                last_seq = train_group['sales'].tail(7).values.reshape(1, 7, 1)
+                                predictions = []
+                                for _ in range(len(spec_df)):
+                                    pred = model.predict(last_seq, verbose=0)[0,0]
+                                    predictions.append(pred)
+                                    last_seq = np.roll(last_seq, -1)
+                                    last_seq[0, -1, 0] = pred
+                                spec_df['predicted_sales'] = np.clip(predictions, 0, None)
+                            else:
+                                spec_df['predicted_sales'] = np.zeros(len(spec_df))
                         else:
-                            train_group = st.session_state.train_set[(st.session_state.train_set['store_nbr'] == store_nbr) & 
-                                                                    (st.session_state.train_set['family'] == family)]
-                            if not train_group.empty:
-                                if model_name == "Naive":
-                                    last_sale = train_group['sales'].iloc[-1]
-                                    predictions = np.full(len(spec_df), last_sale)
-                                elif model_name == "Seasonal Naive":
-                                    last_week = train_group['sales'].tail(7).values if len(train_group) >= 7 else np.full(7, train_group['sales'].mean())
-                                    predictions = np.tile(last_week, (len(spec_df) // 7) + 1)[:len(spec_df)]
-                                elif model_name == "Moving Average":
-                                    window = min(7, len(train_group))
-                                    ma_value = train_group['sales'].tail(window).mean()
-                                    predictions = np.full(len(spec_df), ma_value)
+                            if not train_group.empty and len(train_group) >= 7:
+                                if model_name == "ARIMA":
+                                    model = ARIMA(train_group['sales'], order=(5,1,0))
+                                    fit = model.fit()
+                                    predictions = fit.forecast(steps=len(spec_df))
+                                elif model_name == "SARIMA":
+                                    model = SARIMAX(train_group['sales'], order=(1,1,1), seasonal_order=(1,1,1,7))
+                                    fit = model.fit(disp=False)
+                                    predictions = fit.forecast(steps=len(spec_df))
+                                elif model_name == "Prophet":
+                                    df = train_group[['date', 'sales']].rename(columns={'date': 'ds', 'sales': 'y'})
+                                    model = Prophet(yearly_seasonality=True, weekly_seasonality=True, daily_seasonality=True)
+                                    model.fit(df)
+                                    future = pd.DataFrame({'ds': spec_df['date']})
+                                    forecast = model.predict(future)
+                                    predictions = forecast['yhat'].values
+                                elif model_name == "ETS":
+                                    model = ExponentialSmoothing(train_group['sales'], trend='add', seasonal='add', seasonal_periods=7)
+                                    fit = model.fit()
+                                    predictions = fit.forecast(steps=len(spec_df))
+                                elif model_name == "TBATS":
+                                    model = TBATS(seasonal_periods=[7, 365.25])
+                                    fit = model.fit(train_group['sales'])
+                                    predictions = fit.forecast(steps=len(spec_df))
+                                elif model_name == "Holt-Winters":
+                                    model = ExponentialSmoothing(train_group['sales'], trend='add', seasonal='mul', seasonal_periods=7)
+                                    fit = model.fit()
+                                    predictions = fit.forecast(steps=len(spec_df))
+                                elif model_name == "Theta":
+                                    model = Theta(seasonality_period=7)
+                                    fit = model.fit(y=train_group['sales'].values)
+                                    predictions = fit.forecast(h=len(spec_df))['mean']
+                                elif model_name == "STL":
+                                    model = STL(seasonality_period=7)
+                                    fit = model.fit(y=train_group['sales'].values)
+                                    predictions = fit.forecast(h=len(spec_df))['mean']
                             else:
                                 predictions = np.zeros(len(spec_df))
-                            spec_df['predicted_sales'] = predictions
+                            spec_df['predicted_sales'] = np.clip(predictions, 0, None)
                         
                         # Aggregate predictions based on granularity
                         if time_granularity == "Day":
@@ -514,34 +610,72 @@ with forecasting_tab:
                 forecast_df[st.session_state.feature_cols] = st.session_state.scaler.transform(forecast_df[st.session_state.feature_cols]).astype('float32')
                 
                 # Generate forecasts
-                for model_name in models:
+                for model_name in selected_models:
                     if model_name in st.session_state.model_results:
                         st.subheader(f"{model_name} Forecast")
-                        result = st.session_state.model_results[model_name]
-                        if model_name == "Ridge Regression":
-                            model_path = result.get('model_path')
-                            model = joblib.load(model_path)
-                            X_forecast = forecast_df[st.session_state.feature_cols]
-                            predictions_log = model.predict(X_forecast)
-                            predictions = np.expm1(predictions_log).clip(0)
-                            forecast_df['predicted_sales'] = predictions
+                        if model_name in ["XGBoost", "LightGBM"]:
+                            model_path = os.path.join(tempfile.gettempdir(), f"{model_name.lower()}_{store_nbr}_{family}.pt")
+                            if os.path.exists(model_path):
+                                model = joblib.load(model_path)
+                                X_forecast = forecast_df[st.session_state.feature_cols]
+                                predictions = model.predict(X_forecast).clip(0)
+                                forecast_df['predicted_sales'] = predictions
+                            else:
+                                forecast_df['predicted_sales'] = np.zeros(len(forecast_df))
+                        elif model_name in ["LSTM", "GRU"]:
+                            model_path = os.path.join(tempfile.gettempdir(), f"{model_name.lower()}_{store_nbr}_{family}.pt")
+                            if os.path.exists(model_path):
+                                model = tf.keras.models.load_model(model_path)
+                                last_seq = train_group['sales'].tail(7).values.reshape(1, 7, 1)
+                                predictions = []
+                                for _ in range(len(forecast_df)):
+                                    pred = model.predict(last_seq, verbose=0)[0,0]
+                                    predictions.append(pred)
+                                    last_seq = np.roll(last_seq, -1)
+                                    last_seq[0, -1, 0] = pred
+                                forecast_df['predicted_sales'] = np.clip(predictions, 0, None)
+                            else:
+                                forecast_df['predicted_sales'] = np.zeros(len(forecast_df))
                         else:
-                            train_group = st.session_state.train_set[(st.session_state.train_set['store_nbr'] == store_nbr) & 
-                                                                    (st.session_state.train_set['family'] == family)]
-                            if not train_group.empty:
-                                if model_name == "Naive":
-                                    last_sale = train_group['sales'].iloc[-1]
-                                    predictions = np.full(len(forecast_df), last_sale)
-                                elif model_name == "Seasonal Naive":
-                                    last_week = train_group['sales'].tail(7).values if len(train_group) >= 7 else np.full(7, train_group['sales'].mean())
-                                    predictions = np.tile(last_week, (len(forecast_df) // 7) + 1)[:len(forecast_df)]
-                                elif model_name == "Moving Average":
-                                    window = min(7, len(train_group))
-                                    ma_value = train_group['sales'].tail(window).mean()
-                                    predictions = np.full(len(forecast_df), ma_value)
+                            if not train_group.empty and len(train_group) >= 7:
+                                if model_name == "ARIMA":
+                                    model = ARIMA(train_group['sales'], order=(5,1,0))
+                                    fit = model.fit()
+                                    predictions = fit.forecast(steps=len(forecast_df))
+                                elif model_name == "SARIMA":
+                                    model = SARIMAX(train_group['sales'], order=(1,1,1), seasonal_order=(1,1,1,7))
+                                    fit = model.fit(disp=False)
+                                    predictions = fit.forecast(steps=len(forecast_df))
+                                elif model_name == "Prophet":
+                                    df = train_group[['date', 'sales']].rename(columns={'date': 'ds', 'sales': 'y'})
+                                    model = Prophet(yearly_seasonality=True, weekly_seasonality=True, daily_seasonality=True)
+                                    model.fit(df)
+                                    future = pd.DataFrame({'ds': forecast_df['date']})
+                                    forecast = model.predict(future)
+                                    predictions = forecast['yhat'].values
+                                elif model_name == "ETS":
+                                    model = ExponentialSmoothing(train_group['sales'], trend='add', seasonal='add', seasonal_periods=7)
+                                    fit = model.fit()
+                                    predictions = fit.forecast(steps=len(forecast_df))
+                                elif model_name == "TBATS":
+                                    model = TBATS(seasonal_periods=[7, 365.25])
+                                    fit = model.fit(train_group['sales'])
+                                    predictions = fit.forecast(steps=len(forecast_df))
+                                elif model_name == "Holt-Winters":
+                                    model = ExponentialSmoothing(train_group['sales'], trend='add', seasonal='mul', seasonal_periods=7)
+                                    fit = model.fit()
+                                    predictions = fit.forecast(steps=len(forecast_df))
+                                elif model_name == "Theta":
+                                    model = Theta(seasonality_period=7)
+                                    fit = model.fit(y=train_group['sales'].values)
+                                    predictions = fit.forecast(h=len(forecast_df))['mean']
+                                elif model_name == "STL":
+                                    model = STL(seasonality_period=7)
+                                    fit = model.fit(y=train_group['sales'].values)
+                                    predictions = fit.forecast(h=len(forecast_df))['mean']
                             else:
                                 predictions = np.zeros(len(forecast_df))
-                            forecast_df['predicted_sales'] = predictions
+                            forecast_df['predicted_sales'] = np.clip(predictions, 0, None)
                         
                         # Aggregate forecasts based on granularity
                         if time_granularity == "Day":
