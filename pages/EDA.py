@@ -234,7 +234,7 @@ def main():
                 }))
 
             with st.form("train_process"):
-                if st.form_submit_button("Run"):
+                if st.form_submit_button("Run") and 'train_date_col' in st.session_state:
                     train = load_data(train_file, st.session_state['train_date_col'], st.session_state['train_target_col'])
                     st.session_state['train_df'] = train
                     explore_data(train, st.session_state['train_date_col'], st.session_state['train_target_col'], 
@@ -263,10 +263,10 @@ def main():
                 }))
 
             with st.form("test_process"):
-                if st.form_submit_button("Run"):
+                if st.form_submit_button("Run") and 'test_date_col' in st.session_state:
                     test = load_data(test_file, st.session_state['test_date_col'], None)
                     st.session_state['test_df'] = test
-                    explore_data(test, st.session_state['test_date_col'], st.session_state.get('train_target_col'), 
+                    explore_data(test, st.session_state['test_date_col'], st.session_state.get('train_target_col', None), 
                                  st.session_state['test_numeric_cols'], st.session_state['test_categorical_cols'], "test")
                     st.dataframe(test.head(), height=100)
                     csv_data, mime = get_download_file(test, "test_processed.csv")
