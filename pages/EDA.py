@@ -1,12 +1,8 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-try:
-    import plotly.graph_objects as go
-    import plotly.express as px
-except ImportError:
-    st.error("The 'plotly' package is not installed. Please install it by running 'pip install plotly' or add it to your requirements.txt file.")
-    st.stop()
+import plotly.graph_objects as go
+import plotly.express as px
 from statsmodels.tsa.seasonal import seasonal_decompose
 from statsmodels.tsa.stattools import acf, pacf
 from scipy.signal import periodogram
