@@ -2,6 +2,7 @@ import streamlit as st
 import logging
 import sys
 import os
+import random
 
 # Set up logging (stdout and file)
 logging.basicConfig(
@@ -41,8 +42,10 @@ try:
     # Constants
     TRAIN_END = '2017-07-15'
     VAL_END = '2017-08-15'
-    MAX_GROUPS = 50   # Reduced store-family pairs
-    MAX_MODELS = 1    # Limit to 1 model by default
+    MAX_GROUPS = 50    # Store-family pairs
+    MAX_MODELS = 1     # Limit to 1 model
+    MAX_TRAIN_ROWS = 150000  # Increased to handle 322K rows with sampling
+    MAX_TEST_ROWS = 20000    # Test row limit
 
     # Training Tab
     with training_tab:
@@ -50,9 +53,37 @@ try:
         
         # File uploaders
         st.subheader("Upload Data")
+        st.info("Note: Train CSV should be ≤150K rows (~15 MB) to run on free cloud resources. Larger datasets will be sampled. Use the preprocessing script to subset offline.")
         train_file = st.file_uploader("Upload Train CSV", type="csv", key="uploader_train")
         test_file = st.file_uploader("Upload Test CSV", type="csv", key="uploader_test")
         sub_file = st.file_uploader("Upload Submission CSV", type="csv", key="uploader_sub")
+        
+        # Provide preprocessing script
+        preprocessing_script = """
+import pandas as pd
+
+# Load full train.csv
+train = pd.read_csv('train.csv')
+
+# Sample to 150K rows, preserving store-family diversity
+stores = train['store_nbr'].unique()
+families = train['family'].unique()
+sample_size = 150000
+rows_per_group = max(1, sample_size // (len(stores) * len(families)))
+sampled = train.groupby(['store_nbr', 'family']).apply(lambda x: x.tail(rows_per_group)).reset_index(drop=True)
+if len(sampled) > sample_size:
+    sampled = sampled.sample(n=sample_size, random_state=42)
+
+# Save subset
+sampled.to_csv('train_subset.csv', index=False)
+print(f"Saved train_subset.csv with {len(sampled)} rows")
+"""
+        st.download_button(
+            label="Download Preprocessing Script",
+            data=preprocessing_script,
+            file_name="preprocess_train.py",
+            mime="text/x-python"
+        )
         
         # Model selection
         models = ["ARIMA", "SARIMA", "Prophet", "XGBoost", "LightGBM", "ETS", "TBATS", "Holt-Winters", "VAR", "Random Forest"]
@@ -75,25 +106,64 @@ try:
                     def load_and_process_data(train_file, test_file, sub_file):
                         try:
                             logger.info("Loading CSV files")
-                            train = pd.read_csv(train_file)
-                            test = pd.read_csv(test_file)
-                            sub = pd.read_csv(sub_file)
+                            # Define columns and dtypes
+                            train_cols = ['date', 'store_nbr', 'family', 'sales', 'onpromotion']
+                            test_cols = ['date', 'store_nbr', 'family', 'onpromotion', 'id']
+                            sub_cols = ['id', 'sales']
+                            train_dtypes = {'store_nbr': 'int32', 'family': 'category', 'sales': 'float32', 'onpromotion': 'int32'}
+                            test_dtypes = {'store_nbr': 'int32', 'family': 'category', 'onpromotion': 'int32', 'id': 'int32'}
+                            
+                            # Sample train.csv during chunked reading
+                            chunksize = 50000
+                            target_rows = MAX_TRAIN_ROWS
+                            train_chunks = pd.read_csv(train_file, usecols=train_cols, dtype=train_dtypes, chunksize=chunksize)
+                            train_samples = []
+                            total_rows = 0
+                            reservoir = []
+                            
+                            # Reservoir sampling for proportional store-family representation
+                            for chunk in train_chunks:
+                                total_rows += len(chunk)
+                                if total_rows <= target_rows:
+                                    train_samples.append(chunk)
+                                else:
+                                    # Add chunk to reservoir and sample
+                                    reservoir.extend(chunk.to_dict('records'))
+                                    if len(reservoir) > target_rows:
+                                        reservoir = random.sample(reservoir, target_rows)
+                            
+                            # Combine sampled chunks or reservoir
+                            if reservoir:
+                                train = pd.DataFrame(reservoir)
+                                logger.info(f"Sampled {len(train)} rows from {total_rows} using reservoir sampling")
+                                st.warning(f"Train data ({total_rows} rows) sampled to {len(train)} rows to fit cloud resources.")
+                            else:
+                                train = pd.concat(train_samples, ignore_index=True)
+                                logger.info(f"Loaded {len(train)} rows from {total_rows}")
+                                if total_rows > MAX_TRAIN_ROWS:
+                                    train = train.sample(n=MAX_TRAIN_ROWS, random_state=42)
+                                    logger.info(f"Further sampled to {len(train)} rows")
+                                    st.warning(f"Train data ({total_rows} rows) sampled to {len(train)} rows to fit cloud resources.")
+                            
+                            # Load test and submission CSVs
+                            test = pd.read_csv(test_file, usecols=test_cols, dtype=test_dtypes)
+                            sub = pd.read_csv(sub_file, usecols=sub_cols, dtype={'id': 'int32', 'sales': 'float32'})
+                            
+                            # Validate row limits
+                            if len(test) > MAX_TEST_ROWS:
+                                st.error(f"Test data ({len(test)} rows) exceeds {MAX_TEST_ROWS}. Please use a smaller test dataset.")
+                                logger.error("Test data exceeds size limits")
+                                st.stop()
                             
                             # Validate required columns
-                            required_train_cols = {'date', 'store_nbr', 'family', 'sales', 'onpromotion'}
-                            required_test_cols = {'date', 'store_nbr', 'family', 'onpromotion', 'id'}
-                            required_sub_cols = {'id', 'sales'}
+                            required_train_cols = set(train_cols)
+                            required_test_cols = set(test_cols)
+                            required_sub_cols = set(sub_cols)
                             if not (required_train_cols.issubset(train.columns) and 
                                     required_test_cols.issubset(test.columns) and 
                                     required_sub_cols.issubset(sub.columns)):
                                 st.error("CSV files missing required columns.")
                                 logger.error("Missing required columns")
-                                st.stop()
-                            
-                            # Limit data size
-                            if len(train) > 100000 or len(test) > 20000:
-                                st.error("Input data too large for cloud resources. Please use a smaller dataset.")
-                                logger.error("Input data exceeds size limits")
                                 st.stop()
                             
                             # Parse dates
@@ -107,12 +177,6 @@ try:
                                 st.error("One or more CSV files are empty after processing.")
                                 logger.error("Empty CSV files")
                                 st.stop()
-                            
-                            # Type conversions
-                            train[['store_nbr', 'onpromotion']] = train[['store_nbr', 'onpromotion']].astype('int32')
-                            test[['store_nbr', 'onpromotion']] = test[['store_nbr', 'onpromotion']].astype('int32')
-                            train['sales'] = train['sales'].astype('float32')
-                            sub['sales'] = sub['sales'].astype('float32')
                             
                             # Combine and aggregate
                             train['is_train'] = 1
@@ -195,6 +259,7 @@ try:
                     for model_name in selected_models:
                         st.write(f"Generating predictions for {model_name}...")
                         logger.info(f"Training {model_name}")
+                        import tempfile
                         temp_dir = tempfile.gettempdir()
                         pred_dict = {}
                         
