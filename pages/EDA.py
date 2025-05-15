@@ -25,6 +25,8 @@ def hash_file(file):
         file.seek(0)
     content = file.read()
     file.seek(0)  # Reset file pointer after reading
+    if not content or len(content) == 0:
+        raise ValueError("The file is empty or contains no data.")
     return hashlib.sha256(content).hexdigest()
 
 @st.cache_data
@@ -42,6 +44,8 @@ def load_data(file_content, file_hash, date_col, target_col):
         raise ValueError("The uploaded file is empty or contains no data.")
     try:
         df = pd.read_csv(BytesIO(file_content))
+        if df.empty:
+            raise ValueError("The uploaded file contains no valid data rows.")
         df[date_col] = pd.to_datetime(df[date_col], errors='coerce')
         df[['store_nbr', 'onpromotion']] = df[['store_nbr', 'onpromotion']].astype('int32')
         if target_col and target_col in df.columns:
@@ -373,7 +377,11 @@ def main():
                 train_file_content = train_file.read()
                 train_file.seek(0)  # Reset file pointer after reading
                 train_file_hash = hash_file(train_file)
-                train = load_data(train_file_content, train_file_hash, 'date', 'sales')
+                try:
+                    train = load_data(train_file_content, train_file_hash, 'date', 'sales')
+                except ValueError as e:
+                    st.error(str(e))
+                    st.stop()
                 st.dataframe(train.head(), height=100)
                 date_col = st.selectbox("Select Date Column", train.columns, index=train.columns.tolist().index('date') if 'date' in train.columns else 0, key="train_date")
                 target_col = st.selectbox("Select Target Column (e.g., sales)", train.columns, index=train.columns.tolist().index('sales') if 'sales' in train.columns else 0, key="train_target")
@@ -391,7 +399,11 @@ def main():
 
             if 'train_configured' in st.session_state and st.session_state['train_configured'] and 'train_file' in st.session_state:
                 train_file.seek(0)  # Ensure file pointer is at the beginning
-                train = load_data(st.session_state['train_file'].read(), st.session_state['train_file_hash'], st.session_state['train_date_col'], st.session_state['train_target_col'])
+                try:
+                    train = load_data(st.session_state['train_file'].read(), st.session_state['train_file_hash'], st.session_state['train_date_col'], st.session_state['train_target_col'])
+                except ValueError as e:
+                    st.error(str(e))
+                    st.stop()
                 st.session_state['train_df'] = train
                 st.dataframe(train.head(), height=100)
 
@@ -506,7 +518,11 @@ def main():
                 test_file_content = test_file.read()
                 test_file.seek(0)  # Reset file pointer after reading
                 test_file_hash = hash_file(test_file)
-                test = load_data(test_file_content, test_file_hash, 'date', None)
+                try:
+                    test = load_data(test_file_content, test_file_hash, 'date', None)
+                except ValueError as e:
+                    st.error(str(e))
+                    st.stop()
                 st.dataframe(test.head(), height=100)
                 date_col = st.selectbox("Select Date Column", test.columns, index=test.columns.tolist().index('date') if 'date' in test.columns else 0, key="test_date")
                 numeric_cols, categorical_cols = detect_column_types(test, date_col)
@@ -523,7 +539,11 @@ def main():
 
             if 'test_configured' in st.session_state and st.session_state['test_configured'] and 'test_file' in st.session_state:
                 test_file.seek(0)  # Ensure file pointer is at the beginning
-                test = load_data(st.session_state['test_file'].read(), st.session_state['test_file_hash'], st.session_state['test_date_col'], None)
+                try:
+                    test = load_data(st.session_state['test_file'].read(), st.session_state['test_file_hash'], st.session_state['test_date_col'], None)
+                except ValueError as e:
+                    st.error(str(e))
+                    st.stop()
                 st.session_state['test_df'] = test
                 st.dataframe(test.head(), height=100)
 
