@@ -1,109 +1,237 @@
 import streamlit as st
 import pandas as pd
-import matplotlib.pyplot as plt
-from sklearn.linear_model import LinearRegression
-from sklearn.metrics import mean_absolute_error
-from datetime import timedelta
+import numpy as np
+from sklearn.preprocessing import LabelEncoder, StandardScaler
+from xgboost import XGBRegressor
+from statsmodels.tsa.arima.model import ARIMA
+from statsmodels.tsa.statespace.sarimax import SARIMAX
+from prophet import Prophet
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense
+from io import BytesIO
+import warnings
 
-st.set_page_config(page_title="Sales Forecasting App", layout="wide")
+warnings.filterwarnings("ignore")
 
-# Sidebar upload
-st.sidebar.header("Upload Data")
-train_file = st.sidebar.file_uploader("Upload Training Data", type=["csv"], key="train")
-test_file = st.sidebar.file_uploader("Upload Testing Data", type=["csv"], key="test")
+# Constants
+MAX_TRAIN_ROWS = 100_000
+MIN_TRAIN_SAMPLES = 10
+MODELS = ["XGBoost", "ARIMA", "SARIMA", "Prophet", "LSTM"]
+REQUIRED_COLUMNS = ["id", "date", "store_nbr", "family", "sales", "onpromotion"]
 
-# Load data
-@st.cache_data
-def load_csv(file):
-    df = pd.read_csv(file, parse_dates=['Date'])
-    df = df.sort_values('Date')
-    return df
+# Streamlit Setup
+st.set_page_config(layout="wide")
+st.title("Sales Forecasting Dashboard")
 
-train_data = load_csv(train_file) if train_file else None
-test_data = load_csv(test_file) if test_file else None
+# Session State Initialization
+if "state" not in st.session_state:
+    st.session_state.state = {
+        "train_data": None,
+        "test_data": None,
+        "features": None,
+        "scaler": None,
+        "label_encoders": {},
+        "date_col": "date",
+        "target_col": "sales",
+        "predictions": {},
+    }
 
-# Tabs
-tab1, tab2, tab3 = st.tabs(["Training", "Testing", "Future Forecast"])
+def load_data(train_file, test_file, date_col, target_col, delimiter=","):
+    if not train_file or not test_file:
+        st.error("Upload both train and test CSV files.")
+        return None, None, None, None, None
 
-# --- Training Tab ---
-with tab1:
-    st.header("Model Training")
+    # Preview data
+    train_file.seek(0)
+    test_file.seek(0)
+    train_preview = train_file.read().decode("utf-8").splitlines()[:5]
+    test_preview = test_file.read().decode("utf-8").splitlines()[:5]
+    train_file.seek(0)
+    test_file.seek(0)
 
-    if train_data is not None:
-        st.subheader("Training Data")
-        st.dataframe(train_data.head())
+    st.write("Train CSV Preview (first 5 rows):")
+    for line in train_preview:
+        st.text(line)
+    st.write("Test CSV Preview (first 5 rows):")
+    for line in test_preview:
+        st.text(line)
 
-        # Convert to numeric time for regression
-        train_data['Time'] = (train_data['Date'] - train_data['Date'].min()).dt.days
-        X_train = train_data[['Time']]
-        y_train = train_data['Sales']
+    # Load small sample to validate columns
+    train_sample = pd.read_csv(train_file, nrows=1, delimiter=delimiter)
+    train_file.seek(0)
+    test_sample = pd.read_csv(test_file, nrows=1, delimiter=delimiter)
+    test_file.seek(0)
 
-        model = LinearRegression()
-        model.fit(X_train, y_train)
+    # Validate columns
+    missing_cols = [col for col in REQUIRED_COLUMNS if col not in train_sample.columns]
+    if missing_cols:
+        st.error(f"Train CSV missing required columns: {missing_cols}")
+        return None, None, None, None, None
 
-        # Plot
-        st.subheader("Model Fit")
-        plt.figure(figsize=(10, 4))
-        plt.plot(train_data['Date'], y_train, label="Actual Sales")
-        plt.plot(train_data['Date'], model.predict(X_train), label="Predicted Sales")
-        plt.legend()
-        st.pyplot(plt)
+    if date_col not in train_sample.columns or date_col not in test_sample.columns:
+        st.error(f"Date column '{date_col}' not found in both datasets.")
+        return None, None, None, None, None
 
-        st.success("Model trained successfully.")
-    else:
-        st.warning("Upload training data to train the model.")
+    if target_col not in train_sample.columns:
+        st.error(f"Target column '{target_col}' not found in train CSV.")
+        return None, None, None, None, None
 
-# --- Testing Tab ---
-with tab2:
-    st.header("Model Testing")
+    # Data types to optimize memory
+    dtypes = {
+        "store_nbr": "int32",
+        "family": "category",
+        "onpromotion": "int32",
+        "id": "int32",
+        "city": "category",
+        "state": "category",
+        "type_x": "category",
+        "cluster": "int32",
+        "transactions": "int32",
+        "type_y": "category",
+        "locale": "category",
+        "locale_name": "category",
+        "description": "category",
+        "transferred": "bool",
+        "dcoilwtico": "float32",
+        target_col: "float32",
+    }
 
-    if test_data is not None and train_data is not None:
-        st.subheader("Testing Data")
-        st.dataframe(test_data.head())
+    # Load full datasets
+    train = pd.read_csv(train_file, dtype=dtypes, parse_dates=[date_col], delimiter=delimiter)
+    test = pd.read_csv(test_file, dtype=dtypes, parse_dates=[date_col], delimiter=delimiter)
 
-        # Use the same time reference
-        test_data['Time'] = (test_data['Date'] - train_data['Date'].min()).dt.days
-        X_test = test_data[['Time']]
-        y_test = test_data['Sales']
+    # Clean unwanted columns
+    train = train.loc[:, ~train.columns.str.startswith("Unnamed")]
+    test = test.loc[:, ~test.columns.str.startswith("Unnamed")]
 
-        y_pred = model.predict(X_test)
+    # Validate date parsing
+    if train[date_col].isna().all() or test[date_col].isna().all():
+        st.error(f"Date column '{date_col}' contains no valid dates.")
+        return None, None, None, None, None
 
-        # Plot
-        st.subheader("Predictions vs Actual")
-        plt.figure(figsize=(10, 4))
-        plt.plot(test_data['Date'], y_test, label="Actual")
-        plt.plot(test_data['Date'], y_pred, label="Predicted")
-        plt.legend()
-        st.pyplot(plt)
+    # Check target numeric
+    if not pd.to_numeric(train[target_col], errors="coerce").notna().all():
+        st.error(f"Target column '{target_col}' contains non-numeric values.")
+        return None, None, None, None, None
 
-        mae = mean_absolute_error(y_test, y_pred)
-        st.metric("Mean Absolute Error", f"{mae:.2f}")
-    else:
-        st.warning("Upload both training and testing data.")
+    # Limit training rows for performance
+    if len(train) > MAX_TRAIN_ROWS:
+        train = train.sample(n=MAX_TRAIN_ROWS, random_state=42)
 
-# --- Future Forecast Tab ---
-with tab3:
-    st.header("Future Forecast")
+    # Feature Engineering: date-based
+    for df in [train, test]:
+        df["month"] = df[date_col].dt.month.astype("int8")
+        df["day"] = df[date_col].dt.day.astype("int8")
+        df["weekday"] = df[date_col].dt.dayofweek.astype("int8")
+        df["is_weekend"] = df["weekday"].isin([5,6]).astype("int8")
 
-    if train_data is not None:
-        forecast_days = st.number_input("Days to Forecast", min_value=1, max_value=365, value=30)
+    # Encode categorical features
+    le_store = LabelEncoder()
+    le_family = LabelEncoder()
+    train["store_enc"] = le_store.fit_transform(train["store_nbr"]).astype("int8")
+    test["store_enc"] = le_store.transform(test["store_nbr"]).astype("int8")
+    train["family_enc"] = le_family.fit_transform(train["family"]).astype("int8")
+    test["family_enc"] = le_family.transform(test["family"]).astype("int8")
 
-        last_date = train_data['Date'].max()
-        last_time = (last_date - train_data['Date'].min()).days
+    # Encode extra categorical columns if present
+    extra_cats = ["city", "state", "locale", "type_x", "type_y"]
+    for col in extra_cats:
+        if col in train.columns and col in test.columns:
+            le = LabelEncoder()
+            train[f"{col}_enc"] = le.fit_transform(train[col]).astype("int8")
+            test[f"{col}_enc"] = le.transform(test[col]).astype("int8")
 
-        future_times = list(range(last_time + 1, last_time + 1 + forecast_days))
-        future_dates = [last_date + timedelta(days=i) for i in range(1, forecast_days + 1)]
-        future_preds = model.predict(pd.DataFrame({'Time': future_times}))
+    # Lag features for time series context
+    train = train.sort_values(date_col)
+    test = test.sort_values(date_col)
+    for lag in [7, 14]:
+        train[f"lag_{lag}"] = train.groupby(["store_nbr", "family"])[target_col].shift(lag).fillna(0).astype("float32")
+        # For test, fill lag with 0 as future sales unknown
+        test[f"lag_{lag}"] = 0.0
 
-        forecast_df = pd.DataFrame({'Date': future_dates, 'Predicted Sales': future_preds})
-        st.subheader("Forecast Results")
-        st.dataframe(forecast_df)
+    # Define features for modeling
+    features = [
+        "store_enc", "family_enc", "onpromotion", "month", "day",
+        "weekday", "is_weekend", "lag_7", "lag_14", "dcoilwtico", "transactions"
+    ]
+    for col in [f"{c}_enc" for c in extra_cats]:
+        if col in train.columns:
+            features.append(col)
 
-        # Plot
-        st.subheader("Forecast Plot")
-        plt.figure(figsize=(10, 4))
-        plt.plot(forecast_df['Date'], forecast_df['Predicted Sales'], label="Forecast", color='green')
-        plt.legend()
-        st.pyplot(plt)
-    else:
-        st.warning("Train the model first.")
+    # Scale numeric features
+    scaler = StandardScaler()
+    train[features] = scaler.fit_transform(train[features])
+    test[features] = scaler.transform(test[features])
+
+    return train, test, features, scaler, le_store, le_family
+
+def prepare_lstm_sequences(df, target_col, features, seq_len=14):
+    X, y = [], []
+    data = df[features + [target_col]].values
+    for i in range(len(df) - seq_len):
+        X.append(data[i:i+seq_len, :-1])
+        y.append(data[i+seq_len, -1])
+    return np.array(X), np.array(y)
+
+def train_predict_model(train, test, features, date_col, target_col, model_name):
+    predictions = []
+    test = test.sort_values(["store_nbr", "family", date_col])
+
+    for (store, family), group in test.groupby(["store_nbr", "family"]):
+        train_sub = train[(train["store_nbr"] == store) & (train["family"] == family)]
+        test_sub = group.sort_values(date_col)
+
+        if len(train_sub) < MIN_TRAIN_SAMPLES or train_sub[target_col].var() == 0:
+            preds = np.zeros(len(test_sub))
+        else:
+            if model_name == "XGBoost":
+                X_train = train_sub[features]
+                y_train = np.log1p(train_sub[target_col].clip(0))
+                X_test = test_sub[features]
+                model = XGBRegressor(n_estimators=50, learning_rate=0.1, random_state=42)
+                model.fit(X_train, y_train)
+                preds = np.expm1(model.predict(X_test)).clip(0)
+            elif model_name == "ARIMA":
+                model = ARIMA(train_sub[target_col], order=(3,1,0))
+                fit = model.fit()
+                preds = fit.forecast(steps=len(test_sub)).clip(0)
+            elif model_name == "SARIMA":
+                model = SARIMAX(train_sub[target_col], order=(1,1,1), seasonal_order=(1,1,1,7))
+                fit = model.fit(disp=False)
+                preds = fit.forecast(steps=len(test_sub)).clip(0)
+            elif model_name == "Prophet":
+                df_prophet = train_sub[[date_col, target_col]].rename(columns={date_col:"ds", target_col:"y"})
+                model = Prophet(daily_seasonality=True)
+                model.fit(df_prophet)
+                            future = test_sub[[date_col]].rename(columns={date_col:"ds"})
+            forecast = model.predict(future)
+            preds = forecast["yhat"].clip(0)
+        elif model_name == "LSTM":
+            seq_len = 14
+            X_train, y_train = prepare_lstm_sequences(train_sub, target_col, features, seq_len)
+            if len(X_train) == 0:
+                preds = np.zeros(len(test_sub))
+            else:
+                model = Sequential([
+                    LSTM(50, activation="relu", input_shape=(seq_len, len(features))),
+                    Dense(1)
+                ])
+                model.compile(optimizer="adam", loss="mse")
+                model.fit(X_train, y_train, epochs=5, verbose=0)
+                # For test, use last seq_len rows from train_sub features
+                X_test_seq = train_sub[features].tail(seq_len).values.reshape(1, seq_len, len(features))
+                preds = []
+                for _ in range(len(test_sub)):
+                    pred = model.predict(X_test_seq)[0,0]
+                    preds.append(pred)
+                    # Slide window with predicted value (ignore for features)
+                preds = np.array(preds).clip(0)
+        else:
+            preds = np.zeros(len(test_sub))
+
+    predictions.append(pd.DataFrame({
+        "id": test_sub["id"],
+        "predicted_sales": preds
+    }))
+
+return pd.concat(predictions).sort_values("id")
