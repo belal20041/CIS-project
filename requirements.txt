@@ -16,4 +16,4 @@ missingno
 plotly
 lightgbm
 tbats
-statsforecast
+statsforecast==1.4.0
