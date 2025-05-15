@@ -2,20 +2,32 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from datetime import datetime
-import matplotlib.pyplot as plt
-from PIL import Image
+import plotly.graph_objects as go
+from io import BytesIO
+from sklearn.preprocessing import LabelEncoder, StandardScaler
+from sklearn.metrics import mean_squared_error, mean_absolute_error
+from xgboost import XGBRegressor
+from lightgbm import LGBMRegressor
+from sklearn.ensemble import RandomForestRegressor
+from statsmodels.tsa.arima.model import ARIMA
+from statsmodels.tsa.statespace.sarimax import SARIMAX
+from prophet import Prophet
+from statsmodels.tsa.holtwinters import ExponentialSmoothing
+from tbats import TBATS
+from statsmodels.tsa.vector_ar.var_model import VAR
+import joblib
 import tempfile
 
-st.title("Sales Forecasting Dashboard")
+st.set_page_config(layout="wide")
+st.title("Sales Forecasting")
 
 # Initialize session state
-if 'initialized' not in st.session_state:
-    st.session_state.initialized = True
+if 'forecasting_initialized' not in st.session_state:
+    st.session_state.forecasting_initialized = True
     st.session_state.model_results = {}
     st.session_state.train_set = None
     st.session_state.val_set = None
     st.session_state.test = None
-    st.session_state.sub = None
     st.session_state.feature_cols = None
     st.session_state.scaler = None
     st.session_state.le_store = None
@@ -38,7 +50,6 @@ with training_tab:
     st.header("Train Forecasting Models")
     train_file = st.file_uploader("Upload Train CSV", type="csv", key="uploader_train")
     test_file = st.file_uploader("Upload Test CSV", type="csv", key="uploader_test")
-    sub_file = st.file_uploader("Upload Submission CSV", type="csv", key="uploader_sub")
     
     models = ["ARIMA", "SARIMA", "Prophet", "XGBoost", "LightGBM", "ETS", 
               "TBATS", "Holt-Winters", "VAR", "Random Forest"]
@@ -47,20 +58,20 @@ with training_tab:
     
     train_button = st.button("Generate Predictions")
     
-    if train_button and train_file and test_file and sub_file and selected_models:
+    if train_button and train_file and test_file and selected_models:
         with st.spinner("Processing data..."):
-            def load_and_process_data(train_file, test_file, sub_file):
+            def load_and_process_data(train_file, test_file):
                 # Define dtypes
                 train_dtypes = {'store_nbr': 'int32', 'family': 'category', 
                                'sales': 'float32', 'onpromotion': 'int32'}
                 test_dtypes = {'store_nbr': 'int32', 'family': 'category', 
                               'onpromotion': 'int32', 'id': 'int32'}
-                sub_dtypes = {'id': 'int32', 'sales': 'float32'}
                 
                 # Read train.csv in chunks for sampling
                 chunksize = 50000
                 store_family_counts = {}
-                train_chunks = pd.read_csv(train_file, dtype=train_dtypes, chunksize=chunksize)
+                train_content = train_file.getvalue()
+                train_chunks = pd.read_csv(BytesIO(train_content), dtype=train_dtypes, chunksize=chunksize)
                 for chunk in train_chunks:
                     for (store, family), group in chunk.groupby(['store_nbr', 'family']):
                         store_family_counts[(store, family)] = store_family_counts.get(
@@ -70,7 +81,7 @@ with training_tab:
                 num_pairs = len(store_family_counts)
                 rows_per_pair = max(1, MAX_TRAIN_ROWS // num_pairs)
                 train_samples = []
-                train_chunks = pd.read_csv(train_file, dtype=train_dtypes, chunksize=chunksize)
+                train_chunks = pd.read_csv(BytesIO(train_content), dtype=train_dtypes, chunksize=chunksize)
                 for chunk in train_chunks:
                     sampled_chunk = chunk.groupby(['store_nbr', 'family']).apply(
                         lambda x: x.sample(n=min(len(x), rows_per_pair), random_state=42)
@@ -81,9 +92,9 @@ with training_tab:
                 if len(train) > MAX_TRAIN_ROWS:
                     train = train.sample(n=MAX_TRAIN_ROWS, random_state=42)
                 
-                # Read test.csv and sample_submission.csv
-                test = pd.read_csv(test_file, dtype=test_dtypes)
-                sub = pd.read_csv(sub_file, dtype=sub_dtypes)
+                # Read test.csv
+                test_content = test_file.getvalue()
+                test = pd.read_csv(BytesIO(test_content), dtype=test_dtypes)
                 
                 # Convert dates
                 train['date'] = pd.to_datetime(train['date'], dayfirst=True)
@@ -125,7 +136,6 @@ with training_tab:
                 combined['lag_7'] = combined.groupby(['store_nbr', 'family'])['sales'].shift(7).fillna(0).astype('float32')
                 
                 # Encode categorical variables
-                from sklearn.preprocessing import LabelEncoder
                 le_store = LabelEncoder()
                 le_family = LabelEncoder()
                 combined['store_nbr_encoded'] = le_store.fit_transform(combined['store_nbr']).astype('int8')
@@ -133,7 +143,6 @@ with training_tab:
                 
                 # Scale features
                 feature_cols = ['onpromotion', 'day', 'dow', 'month', 'store_nbr_encoded', 'family_encoded', 'lag_7']
-                from sklearn.preprocessing import StandardScaler
                 scaler = StandardScaler()
                 combined[feature_cols] = scaler.fit_transform(combined[feature_cols]).astype('float32')
                 
@@ -143,7 +152,7 @@ with training_tab:
                 train_set = train[train['date'] <= TRAIN_END]
                 val_set = train[(train['date'] > TRAIN_END) & (train['date'] <= VAL_END)]
                 
-                return train_set, val_set, test, sub, feature_cols, scaler, le_store, le_family
+                return train_set, val_set, test, feature_cols, scaler, le_store, le_family
             
             def clipped_mape(y_true, y_pred):
                 y_true, y_pred = np.array(y_true), np.array(y_pred)
@@ -151,15 +160,14 @@ with training_tab:
                 return np.mean(np.abs((y_true[mask] - y_pred[mask]) / y_true[mask])) * 100 if mask.sum() > 0 else 0.0
             
             # Process data
-            train_set, val_set, test, sub, feature_cols, scaler, le_store, le_family = load_and_process_data(
-                train_file, test_file, sub_file
+            train_set, val_set, test, feature_cols, scaler, le_store, le_family = load_and_process_data(
+                train_file, test_file
             )
             
             # Store in session state
             st.session_state.train_set = train_set
             st.session_state.val_set = val_set
             st.session_state.test = test
-            st.session_state.sub = sub
             st.session_state.feature_cols = feature_cols
             st.session_state.scaler = scaler
             st.session_state.le_store = le_store
@@ -185,19 +193,16 @@ with training_tab:
                     
                     if len(train_group) >= MIN_SAMPLES and train_group['sales'].var() > 0:
                         if model_name == "ARIMA":
-                            from statsmodels.tsa.arima.model import ARIMA
                             model = ARIMA(train_group['sales'], order=(3,1,0))
                             fit = model.fit()
                             preds = fit.forecast(steps=len(actuals))
                         
                         elif model_name == "SARIMA":
-                            from statsmodels.tsa.statespace.sarimax import SARIMAX
                             model = SARIMAX(train_group['sales'], order=(1,1,1), seasonal_order=(1,1,1,7))
                             fit = model.fit(disp=False)
                             preds = fit.forecast(steps=len(actuals))
                         
                         elif model_name == "Prophet":
-                            from prophet import Prophet
                             df = train_group[['date', 'sales']].rename(columns={'date': 'ds', 'sales': 'y'})
                             model = Prophet(daily_seasonality=True)
                             model.fit(df)
@@ -206,16 +211,12 @@ with training_tab:
                             preds = forecast['yhat'].values
                         
                         elif model_name in ["XGBoost", "LightGBM", "Random Forest"]:
-                            from sklearn.ensemble import RandomForestRegressor
-                            import joblib
                             X_train = train_group[feature_cols]
                             y_train = np.log1p(train_group['sales'].clip(0))
                             X_val = val_group[feature_cols]
                             if model_name == "XGBoost":
-                                from xgboost import XGBRegressor
                                 model = XGBRegressor(n_estimators=50, learning_rate=0.1, random_state=42)
                             elif model_name == "LightGBM":
-                                from lightgbm import LGBMRegressor
                                 model = LGBMRegressor(n_estimators=50, learning_rate=0.1, random_state=42)
                             else:
                                 model = RandomForestRegressor(n_estimators=50, random_state=42)
@@ -225,25 +226,21 @@ with training_tab:
                             joblib.dump(model, f"{temp_dir}/{model_name.lower()}_{store}_{family}.pt")
                         
                         elif model_name == "ETS":
-                            from statsmodels.tsa.holtwinters import ExponentialSmoothing
                             model = ExponentialSmoothing(train_group['sales'], trend='add', seasonal='add', seasonal_periods=7)
                             fit = model.fit()
                             preds = fit.forecast(steps=len(actuals))
                         
                         elif model_name == "TBATS":
-                            from tbats import TBATS
                             model = TBATS(seasonal_periods=[7], use_box_cox=False)
                             fit = model.fit(train_group['sales'])
                             preds = fit.forecast(steps=len(actuals))
                         
                         elif model_name == "Holt-Winters":
-                            from statsmodels.tsa.holtwinters import ExponentialSmoothing
                             model = ExponentialSmoothing(train_group['sales'], trend='add', seasonal='mul', seasonal_periods=7)
                             fit = model.fit()
                             preds = fit.forecast(steps=len(actuals))
                         
                         elif model_name == "VAR":
-                            from statsmodels.tsa.vector_ar.var_model import VAR
                             var_data = train_group[['sales', 'onpromotion']]
                             model = VAR(var_data)
                             fit = model.fit(maxlags=7)
@@ -256,7 +253,6 @@ with training_tab:
                     pred_dict[(store, family)] = {'dates': dates, 'actuals': actuals, 'preds': preds}
                 
                 # Calculate metrics
-                from sklearn.metrics import mean_squared_error, mean_absolute_error
                 all_actuals = []
                 all_preds = []
                 for data in pred_dict.values():
@@ -272,23 +268,21 @@ with training_tab:
                 
                 # Plot predictions
                 n_plot = min(100, len(all_actuals))
-                plt.figure(figsize=(10, 5))
-                plt.plot(dates[:n_plot], all_actuals[:n_plot], label='Actual')
-                plt.plot(dates[:n_plot], all_preds[:n_plot], label='Predicted')
-                plt.title(f"{model_name} Predictions")
-                plt.xlabel("Date")
-                plt.ylabel("Sales")
-                plt.legend()
-                plt.xticks(rotation=45)
-                plt.tight_layout()
-                plot_path = f"{temp_dir}/{model_name.lower()}_pred.png"
-                plt.savefig(plot_path)
-                plt.close()
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(x=dates[:n_plot], y=all_actuals[:n_plot], mode='lines', name='Actual', line=dict(color='blue')))
+                fig.add_trace(go.Scatter(x=dates[:n_plot], y=all_preds[:n_plot], mode='lines', name='Predicted', line=dict(color='orange')))
+                fig.update_layout(
+                    title=f"{model_name} Predictions",
+                    xaxis_title="Date",
+                    yaxis_title="Sales",
+                    xaxis_tickangle=45,
+                    yaxis_gridcolor='lightgray'
+                )
+                st.plotly_chart(fig)
                 
                 # Store results
                 st.session_state.model_results[model_name] = {
                     'metrics': metrics,
-                    'plot_path': plot_path,
                     'pred_dict': pred_dict
                 }
                 
@@ -331,21 +325,17 @@ with prediction_tab:
                         pred = data['preds']
                         
                         n_plot = min(100, len(actual))
-                        plt.figure(figsize=(10, 5))
-                        plt.plot(dates[:n_plot], actual[:n_plot], label='Actual', color='blue')
-                        plt.plot(dates[:n_plot], pred[:n_plot], label='Predicted', color='orange')
-                        plt.title(f"{model_name} Predictions: Store {store_nbr}, Family {family}")
-                        plt.xlabel("Date")
-                        plt.ylabel("Sales")
-                        plt.legend()
-                        plt.xticks(rotation=45)
-                        plt.tight_layout()
-                        plot_path = f"{tempfile.gettempdir()}/{model_name.lower()}_custom_pred.png"
-                        plt.savefig(plot_path)
-                        plt.close()
-                        
-                        image = Image.open(plot_path)
-                        st.image(image, caption=f"{model_name} Predictions vs Actual", use_column_width=True)
+                        fig = go.Figure()
+                        fig.add_trace(go.Scatter(x=dates[:n_plot], y=actual[:n_plot], mode='lines', name='Actual', line=dict(color='blue')))
+                        fig.add_trace(go.Scatter(x=dates[:n_plot], y=pred[:n_plot], mode='lines', name='Predicted', line=dict(color='orange')))
+                        fig.update_layout(
+                            title=f"{model_name} Predictions: Store {store_nbr}, Family {family}",
+                            xaxis_title="Date",
+                            yaxis_title="Sales",
+                            xaxis_tickangle=45,
+                            yaxis_gridcolor='lightgray'
+                        )
+                        st.plotly_chart(fig)
                         
                         st.write("### Metrics")
                         col1, col2, col3, col4 = st.columns(4)
@@ -409,7 +399,6 @@ with specific_prediction_tab:
                 for model_name in selected_models:
                     st.subheader(f"{model_name} Prediction")
                     if model_name in ["XGBoost", "LightGBM", "Random Forest"]:
-                        import joblib
                         model_path = f"{tempfile.gettempdir()}/{model_name.lower()}_{store_nbr}_{family}.pt"
                         model = joblib.load(model_path)
                         X_spec = spec_df[st.session_state.feature_cols]
@@ -419,17 +408,14 @@ with specific_prediction_tab:
                     else:
                         if len(train_group) >= MIN_SAMPLES and train_group['sales'].var() > 0:
                             if model_name == "ARIMA":
-                                from statsmodels.tsa.arima.model import ARIMA
                                 model = ARIMA(train_group['sales'], order=(3,1,0))
                                 fit = model.fit()
                                 predictions = fit.forecast(steps=len(spec_df))
                             elif model_name == "SARIMA":
-                                from statsmodels.tsa.statespace.sarimax import SARIMAX
                                 model = SARIMAX(train_group['sales'], order=(1,1,1), seasonal_order=(1,1,1,7))
                                 fit = model.fit(disp=False)
                                 predictions = fit.forecast(steps=len(spec_df))
                             elif model_name == "Prophet":
-                                from prophet import Prophet
                                 df = train_group[['date', 'sales']].rename(columns={'date': 'ds', 'sales': 'y'})
                                 model = Prophet(daily_seasonality=True)
                                 model.fit(df)
@@ -437,22 +423,18 @@ with specific_prediction_tab:
                                 forecast = model.predict(future)
                                 predictions = forecast['yhat'].values
                             elif model_name == "ETS":
-                                from statsmodels.tsa.holtwinters import ExponentialSmoothing
                                 model = ExponentialSmoothing(train_group['sales'], trend='add', seasonal='add', seasonal_periods=7)
                                 fit = model.fit()
                                 predictions = fit.forecast(steps=len(spec_df))
                             elif model_name == "TBATS":
-                                from tbats import TBATS
                                 model = TBATS(seasonal_periods=[7], use_box_cox=False)
                                 fit = model.fit(train_group['sales'])
                                 predictions = fit.forecast(steps=len(spec_df))
                             elif model_name == "Holt-Winters":
-                                from statsmodels.tsa.holtwinters import ExponentialSmoothing
                                 model = ExponentialSmoothing(train_group['sales'], trend='add', seasonal='mul', seasonal_periods=7)
                                 fit = model.fit()
                                 predictions = fit.forecast(steps=len(spec_df))
                             elif model_name == "VAR":
-                                from statsmodels.tsa.vector_ar.var_model import VAR
                                 var_data = train_group[['sales', 'onpromotion']]
                                 model = VAR(var_data)
                                 fit = model.fit(maxlags=7)
@@ -469,20 +451,16 @@ with specific_prediction_tab:
                         avg_sales = spec_df['predicted_sales'].mean()
                         st.write(f"Average Predicted Sales for {time_granularity} ({year}-{month:02d} if Month): **{avg_sales:.2f}**")
                     
-                    plt.figure(figsize=(10, 5))
-                    plt.plot(spec_df['date'], spec_df['predicted_sales'], label=f'{model_name} Prediction')
-                    plt.title(f"{model_name} Sales Prediction for Store {store_nbr}, Family {family}")
-                    plt.xlabel("Date")
-                    plt.ylabel("Predicted Sales")
-                    plt.legend()
-                    plt.xticks(rotation=45)
-                    plt.tight_layout()
-                    plot_path = f"{tempfile.gettempdir()}/{model_name.lower()}_spec_pred.png"
-                    plt.savefig(plot_path)
-                    plt.close()
-                    
-                    image = Image.open(plot_path)
-                    st.image(image, caption=f"{model_name} Prediction", use_column_width=True)
+                    fig = go.Figure()
+                    fig.add_trace(go.Scatter(x=spec_df['date'], y=spec_df['predicted_sales'], mode='lines', name=f'{model_name} Prediction'))
+                    fig.update_layout(
+                        title=f"{model_name} Sales Prediction for Store {store_nbr}, Family {family}",
+                        xaxis_title="Date",
+                        yaxis_title="Predicted Sales",
+                        xaxis_tickangle=45,
+                        yaxis_gridcolor='lightgray'
+                    )
+                    st.plotly_chart(fig)
 
 with forecasting_tab:
     st.header("Forecast Sales for Specific Period")
@@ -539,7 +517,6 @@ with forecasting_tab:
                 for model_name in selected_models:
                     st.subheader(f"{model_name} Forecast")
                     if model_name in ["XGBoost", "LightGBM", "Random Forest"]:
-                        import joblib
                         model_path = f"{tempfile.gettempdir()}/{model_name.lower()}_{store_nbr}_{family}.pt"
                         model = joblib.load(model_path)
                         X_forecast = forecast_df[st.session_state.feature_cols]
@@ -549,17 +526,14 @@ with forecasting_tab:
                     else:
                         if len(train_group) >= MIN_SAMPLES and train_group['sales'].var() > 0:
                             if model_name == "ARIMA":
-                                from statsmodels.tsa.arima.model import ARIMA
                                 model = ARIMA(train_group['sales'], order=(3,1,0))
                                 fit = model.fit()
                                 predictions = fit.forecast(steps=len(forecast_df))
                             elif model_name == "SARIMA":
-                                from statsmodels.tsa.statespace.sarimax import SARIMAX
                                 model = SARIMAX(train_group['sales'], order=(1,1,1), seasonal_order=(1,1,1,7))
                                 fit = model.fit(disp=False)
                                 predictions = fit.forecast(steps=len(forecast_df))
                             elif model_name == "Prophet":
-                                from prophet import Prophet
                                 df = train_group[['date', 'sales']].rename(columns={'date': 'ds', 'sales': 'y'})
                                 model = Prophet(daily_seasonality=True)
                                 model.fit(df)
@@ -567,22 +541,18 @@ with forecasting_tab:
                                 forecast = model.predict(future)
                                 predictions = forecast['yhat'].values
                             elif model_name == "ETS":
-                                from statsmodels.tsa.holtwinters import ExponentialSmoothing
                                 model = ExponentialSmoothing(train_group['sales'], trend='add', seasonal='add', seasonal_periods=7)
                                 fit = model.fit()
                                 predictions = fit.forecast(steps=len(forecast_df))
                             elif model_name == "TBATS":
-                                from tbats import TBATS
                                 model = TBATS(seasonal_periods=[7], use_box_cox=False)
                                 fit = model.fit(train_group['sales'])
                                 predictions = fit.forecast(steps=len(forecast_df))
                             elif model_name == "Holt-Winters":
-                                from statsmodels.tsa.holtwinters import ExponentialSmoothing
                                 model = ExponentialSmoothing(train_group['sales'], trend='add', seasonal='mul', seasonal_periods=7)
                                 fit = model.fit()
                                 predictions = fit.forecast(steps=len(forecast_df))
                             elif model_name == "VAR":
-                                from statsmodels.tsa.vector_ar.var_model import VAR
                                 var_data = train_group[['sales', 'onpromotion']]
                                 model = VAR(var_data)
                                 fit = model.fit(maxlags=7)
@@ -599,17 +569,13 @@ with forecasting_tab:
                         avg_sales = forecast_df['predicted_sales'].mean()
                         st.write(f"Average Forecasted Sales for {time_granularity} ({year}-{month:02d} if Month): **{avg_sales:.2f}**")
                     
-                    plt.figure(figsize=(10, 5))
-                    plt.plot(forecast_df['date'], forecast_df['predicted_sales'], label=f'{model_name} Forecast')
-                    plt.title(f"{model_name} Sales Forecast for Store {store_nbr}, Family {family}")
-                    plt.xlabel("Date")
-                    plt.ylabel("Predicted Sales")
-                    plt.legend()
-                    plt.xticks(rotation=45)
-                    plt.tight_layout()
-                    plot_path = f"{tempfile.gettempdir()}/{model_name.lower()}_forecast.png"
-                    plt.savefig(plot_path)
-                    plt.close()
-                    
-                    image = Image.open(plot_path)
-                    st.image(image, caption=f"{model_name} Forecast", use_column_width=True)
+                    fig = go.Figure()
+                    fig.add_trace(go.Scatter(x=forecast_df['date'], y=forecast_df['predicted_sales'], mode='lines', name=f'{model_name} Forecast'))
+                    fig.update_layout(
+                        title=f"{model_name} Sales Forecast for Store {store_nbr}, Family {family}",
+                        xaxis_title="Date",
+                        yaxis_title="Predicted Sales",
+                        xaxis_tickangle=45,
+                        yaxis_gridcolor='lightgray'
+                    )
+                    st.plotly_chart(fig)
