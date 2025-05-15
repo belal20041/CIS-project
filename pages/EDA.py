@@ -216,14 +216,15 @@ def main():
     with train_tab:
         train_file = st.file_uploader("Train Data", ['csv'], key="train")
         if train_file:
-            train = pd.read_csv(train_file)
-            st.dataframe(train.head(), height=100)
-
             with st.form("train_config"):
+                train = pd.read_csv(train_file)
+                st.dataframe(train.head(), height=100)
                 date_col = st.selectbox("Date", train.columns, key="train_date")
                 target_col = st.selectbox("Target", train.columns, key="train_target")
                 numeric_cols, categorical_cols = detect_column_types(train, date_col)
-                numeric_cols = st.multiselect("Numeric", train.columns, default=numeric_cols, key="train_numeric")
+                numeric_cols = st.multiselect("Numeric", train.columns, default=numeric_cols,
+
+ key="train_numeric")
                 categorical_cols = st.multiselect("Categorical", train.columns, default=categorical_cols, key="train_categorical")
                 outlier_method = st.selectbox("Outliers", ['None', 'Remove', 'Replace'], key="train_outlier")
                 outlier_method = outlier_method.lower() if outlier_method != 'None' else None
@@ -231,13 +232,13 @@ def main():
                 st.form_submit_button("Apply", on_click=lambda: st.session_state.update({
                     'train_date_col': date_col, 'train_target_col': target_col, 'train_numeric_cols': numeric_cols,
                     'train_categorical_cols': categorical_cols, 'train_outlier_method': outlier_method, 'train_scale': scale,
-                    'train_configured': True
+                    'train_configured': True, 'train_file': train_file
                 }))
 
-            if 'train_configured' in st.session_state and st.session_state['train_configured']:
+            if 'train_configured' in st.session_state and st.session_state['train_configured'] and 'train_file' in st.session_state:
                 with st.form("train_process"):
                     if st.form_submit_button("Run"):
-                        train = load_data(train_file, st.session_state['train_date_col'], st.session_state['train_target_col'])
+                        train = load_data(st.session_state['train_file'], st.session_state['train_date_col'], st.session_state['train_target_col'])
                         st.session_state['train_df'] = train
                         explore_data(train, st.session_state['train_date_col'], st.session_state['train_target_col'], 
                                      st.session_state['train_numeric_cols'], st.session_state['train_categorical_cols'], "train")
@@ -248,10 +249,9 @@ def main():
     with test_tab:
         test_file = st.file_uploader("Test Data", ['csv'], key="test")
         if test_file:
-            test = pd.read_csv(test_file)
-            st.dataframe(test.head(), height=100)
-
             with st.form("test_config"):
+                test = pd.read_csv(test_file)
+                st.dataframe(test.head(), height=100)
                 date_col = st.selectbox("Date", test.columns, key="test_date")
                 numeric_cols, categorical_cols = detect_column_types(test, date_col)
                 numeric_cols = st.multiselect("Numeric", test.columns, default=numeric_cols, key="test_numeric")
@@ -261,13 +261,13 @@ def main():
                 scale = st.checkbox("Scale", key="test_scale")
                 st.form_submit_button("Apply", on_click=lambda: st.session_state.update({
                     'test_date_col': date_col, 'test_numeric_cols': numeric_cols, 'test_categorical_cols': categorical_cols,
-                    'test_outlier_method': outlier_method, 'test_scale': scale, 'test_configured': True
+                    'test_outlier_method': outlier_method, 'test_scale': scale, 'test_configured': True, 'test_file': test_file
                 }))
 
-            if 'test_configured' in st.session_state and st.session_state['test_configured']:
+            if 'test_configured' in st.session_state and st.session_state['test_configured'] and 'test_file' in st.session_state:
                 with st.form("test_process"):
                     if st.form_submit_button("Run"):
-                        test = load_data(test_file, st.session_state['test_date_col'], None)
+                        test = load_data(st.session_state['test_file'], st.session_state['test_date_col'], None)
                         st.session_state['test_df'] = test
                         explore_data(test, st.session_state['test_date_col'], st.session_state.get('train_target_col', None), 
                                      st.session_state['test_numeric_cols'], st.session_state['test_categorical_cols'], "test")
