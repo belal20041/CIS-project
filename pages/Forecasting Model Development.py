@@ -2,19 +2,25 @@ import pandas as pd
 import numpy as np
 import argparse
 from sklearn.preprocessing import LabelEncoder, StandardScaler
-from xgboost import XGBRegressor
 from sklearn.metrics import mean_squared_error, mean_absolute_error
+from xgboost import XGBRegressor
+from statsmodels.tsa.arima.model import ARIMA
+from statsmodels.tsa.statespace.sarimax import SARIMAX
+from prophet import Prophet
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense
 import warnings
 warnings.filterwarnings("ignore")
 
 # Constants
-MAX_TRAIN_ROWS = 150000
-MIN_SAMPLES = 14
+MAX_TRAIN_ROWS = 100000
+MIN_SAMPLES = 10
+MODELS = ["XGBoost", "ARIMA", "SARIMA", "Prophet", "LSTM"]
 
 def load_and_process_data(train_path, test_path, date_col="date", target_col="sales"):
-    """Load and process train/test CSV files."""
+    """Load and process train/test CSV files with simplified feature engineering."""
     try:
-        # Define dtypes for efficiency
+        # Define dtypes
         dtypes = {
             "store_nbr": "int32",
             "family": "category",
@@ -22,40 +28,36 @@ def load_and_process_data(train_path, test_path, date_col="date", target_col="sa
             target_col: "float32",
             "id": "int32"
         }
-        optional_cols = ["city", "state", "type_x", "cluster", "transactions", "dcoilwtico", 
-                         "locale", "locale_name", "description", "transferred", "type_y"]
+        optional_cols = ["city", "state", "cluster", "transactions", "dcoilwtico", "locale"]
         for col in optional_cols:
-            dtypes[col] = ("category" if col in ["city", "state", "type_x", "locale", 
-                                                "locale_name", "description", "type_y"]
-                          else "float32" if col in ["dcoilwtico", "transactions", "cluster"]
-                          else "bool")
+            dtypes[col] = "category" if col in ["city", "state", "locale"] else "float32"
 
         # Load data
         train = pd.read_csv(train_path, dtype=dtypes, parse_dates=[date_col])
         test = pd.read_csv(test_path, dtype=dtypes, parse_dates=[date_col])
 
-        # Drop Unnamed: 17 if present
-        if "Unnamed: 17" in train.columns:
-            train = train.drop(columns=["Unnamed: 17"])
-        if "Unnamed: 17" in test.columns:
-            test = test.drop(columns=["Unnamed: 17"])
+        # Drop unwanted columns
+        train = train.drop(columns=[col for col in train.columns if col.startswith("Unnamed")], errors="ignore")
+        test = test.drop(columns=[col for col in test.columns if col.startswith("Unnamed")], errors="ignore")
 
-        # Validate target column
+        # Validate data
+        if train[date_col].isna().any() or test[date_col].isna().any():
+            raise ValueError(f"Invalid dates in '{date_col}' column.")
         if not pd.to_numeric(train[target_col], errors="coerce").notna().all():
             raise ValueError(f"Target column '{target_col}' contains non-numeric values.")
 
-        # Sample train data to reduce memory usage
+        # Sample train data
         if len(train) > MAX_TRAIN_ROWS:
             train = train.sample(n=MAX_TRAIN_ROWS, random_state=42)
 
-        # Basic feature engineering
+        # Feature engineering
         for df in [train, test]:
             df["month"] = df[date_col].dt.month.astype("int8")
             df["day"] = df[date_col].dt.day.astype("int8")
             df["dow"] = df[date_col].dt.dayofweek.astype("int8")
-            df["is_weekend"] = df[date_col].dt.dayofweek.isin([5, 6]).astype("int8")
+            df["is_weekend"] = df["dow"].isin([5, 6]).astype("int8")
 
-        # Encode categorical columns
+        # Encode categoricals
         le_store = LabelEncoder()
         le_family = LabelEncoder()
         train["store_nbr_encoded"] = le_store.fit_transform(train["store_nbr"]).astype("int8")
@@ -63,16 +65,27 @@ def load_and_process_data(train_path, test_path, date_col="date", target_col="sa
         train["family_encoded"] = le_family.fit_transform(train["family"]).astype("int8")
         test["family_encoded"] = le_family.transform(test["family"]).astype("int8")
 
-        # Simple lag features
+        # Encode optional categoricals
+        for col in ["city", "state", "locale"]:
+            if col in train.columns and col in test.columns:
+                le = LabelEncoder()
+                train[f"{col}_encoded"] = le.fit_transform(train[col]).astype("int8")
+                test[f"{col}_encoded"] = le.transform(test[col]).astype("int8")
+
+        # Lag features
         train = train.sort_values([date_col])
         test = test.sort_values([date_col])
         for lag in [7, 14]:
             train[f"lag_{lag}"] = train.groupby(["store_nbr", "family"])[target_col].shift(lag).fillna(0).astype("float32")
-            test[f"lag_{lag}"] = test.groupby(["store_nbr", "family"])[target_col].shift(lag).fillna(0).astype("float32") if target_col in test else 0
+            test[f"lag_{lag}"] = 0.0 if target_col not in test else \
+                test.groupby(["store_nbr", "family"])[target_col].shift(lag).fillna(0).astype("float32")
 
-        # Define feature columns
-        feature_cols = ["store_nbr_encoded", "family_encoded", "onpromotion", "month", "day", "dow", 
-                        "is_weekend", "lag_7", "lag_14"]
+        # Features for XGBoost/LSTM
+        feature_cols = ["store_nbr_encoded", "family_encoded", "onpromotion", 
+                        "month", "day", "dow", "is_weekend", "lag_7", "lag_14"]
+        for col in ["city_encoded", "state_encoded", "locale_encoded"]:
+            if col in train.columns:
+                feature_cols.append(col)
 
         # Scale features
         scaler = StandardScaler()
@@ -85,48 +98,82 @@ def load_and_process_data(train_path, test_path, date_col="date", target_col="sa
         print(f"Error processing data: {str(e)}")
         return None, None, None, None, None, None
 
-def train_and_predict(train, test, feature_cols, date_col, target_col, min_samples):
-    """Train XGBoost model and generate predictions."""
+def prepare_lstm_data(data, target_col, feature_cols, sequence_length=14):
+    """Prepare sequences for LSTM model."""
+    X, y = [], []
+    data_array = data[feature_cols + [target_col]].values
+    for i in range(len(data) - sequence_length):
+        X.append(data_array[i:i + sequence_length, :-1])
+        y.append(data_array[i + sequence_length, -1])
+    return np.array(X), np.array(y)
+
+def train_and_predict(train, test, feature_cols, date_col, target_col, model_name):
+    """Train specified model and generate predictions."""
     try:
         predictions = []
-        test_ids = test["id"].values
-        test_dates = test[date_col].values
+        test = test.sort_values(["store_nbr", "family", date_col])
 
-        # Group by store and family
-        for (store, family), group in test.groupby(["store_nbr", "family"]):
+        for (store, family), test_group in test.groupby(["store_nbr", "family"]):
             train_group = train[(train["store_nbr"] == store) & (train["family"] == family)]
-            test_group = group.sort_values(date_col)
+            test_group = test_group.sort_values(date_col)
 
-            if len(train_group) >= min_samples and train_group[target_col].var() > 0:
-                # Prepare data
-                X_train = train_group[feature_cols]
-                y_train = np.log1p(train_group[target_col].clip(0))
-                X_test = test_group[feature_cols]
-
-                # Train XGBoost
-                model = XGBRegressor(n_estimators=50, learning_rate=0.1, random_state=42)
-                model.fit(X_train, y_train)
-
-                # Predict
-                preds_log = model.predict(X_test)
-                preds = np.expm1(preds_log).clip(0)
-            else:
+            if len(train_group) < MIN_SAMPLES or train_group[target_col].var() == 0:
                 preds = np.zeros(len(test_group))
+            else:
+                if model_name == "XGBoost":
+                    X_train = train_group[feature_cols]
+                    y_train = np.log1p(train_group[target_col].clip(0))
+                    X_test = test_group[feature_cols]
+                    model = XGBRegressor(n_estimators=50, learning_rate=0.1, random_state=42)
+                    model.fit(X_train, y_train)
+                    preds_log = model.predict(X_test)
+                    preds = np.expm1(preds_log).clip(0)
+                elif model_name == "ARIMA":
+                    model = ARIMA(train_group[target_col], order=(3, 1, 0))
+                    fit = model.fit()
+                    preds = fit.forecast(steps=len(test_group)).clip(0)
+                elif model_name == "SARIMA":
+                    model = SARIMAX(train_group[target_col], order=(1, 1, 1), seasonal_order=(1, 1, 1, 7))
+                    fit = model.fit(disp=False)
+                    preds = fit.forecast(steps=len(test_group)).clip(0)
+                elif model_name == "Prophet":
+                    df = train_group[[date_col, target_col]].rename(columns={date_col: "ds", target_col: "y"})
+                    model = Prophet(daily_seasonality=True)
+                    model.fit(df)
+                    future = pd.DataFrame({"ds": test_group[date_col]})
+                    forecast = model.predict(future)
+                    preds = forecast["yhat"].values.clip(0)
+                elif model_name == "LSTM":
+                    sequence_length = 14
+                    X_train, y_train = prepare_lstm_data(train_group, target_col, feature_cols, sequence_length)
+                    if len(X_train) == 0:
+                        preds = np.zeros(len(test_group))
+                    else:
+                        model = Sequential([
+                            LSTM(50, activation="relu", input_shape=(sequence_length, len(feature_cols))),
+                            Dense(1)
+                        ])
+                        model.compile(optimizer="adam", loss="mse")
+                        model.fit(X_train, y_train, epochs=10, batch_size=32, verbose=0)
+                        # Prepare test sequences
+                        combined = pd.concat([train_group.tail(sequence_length), test_group]).reset_index(drop=True)
+                        X_test, _ = prepare_lstm_data(combined, target_col, feature_cols + [target_col], sequence_length)
+                        X_test = X_test[-len(test_group):]  # Take only test portion
+                        preds = model.predict(X_test, verbose=0).flatten().clip(0)
 
             # Store predictions
             group_preds = pd.DataFrame({
                 "id": test_group["id"],
-                "date": test_group[date_col],
+                date_col: test_group[date_col],
                 target_col: preds
             })
             predictions.append(group_preds)
 
-        # Combine predictions
         predictions_df = pd.concat(predictions).sort_values("id")
         return predictions_df
 
     except Exception as e:
-        print(f"Error during training/prediction: {str(e)}")
+        print(f"Error during training/prediction with {model_name}: {str(e)}")
         return None
 
 def main():
@@ -137,6 +184,7 @@ def main():
     parser.add_argument("--output", default="predictions.csv", help="Output CSV file for predictions")
     parser.add_argument("--date-col", default="date", help="Name of date column")
     parser.add_argument("--target-col", default="sales", help="Name of target column")
+    parser.add_argument("--model", default="XGBoost", choices=MODELS, help="Model to use")
     args = parser.parse_args()
 
     # Load and process data
@@ -149,20 +197,22 @@ def main():
         return
 
     # Train and predict
-    print("Training model and generating predictions...")
-    predictions = train_and_predict(train, test, feature_cols, args.date_col, args.target_col, MIN_SAMPLES)
+    print(f"Training {args.model} model and generating predictions...")
+    predictions = train_and_predict(train, test, feature_cols, args.date_col, args.target_col, args.model)
     if predictions is None:
         print("Failed to generate predictions. Exiting.")
         return
 
     # Save predictions
-    predictions.to_csv(args.output, index=False)
-    print(f"Predictions saved to {args.output}")
+    output_file = args.output if args.output.endswith(".csv") else f"{args.output}_{args.model}.csv"
+    predictions.to_csv(output_file, index=False)
+    print(f"Predictions saved to {output_file}")
 
-    # Calculate metrics (if target is available in test for validation)
+    # Calculate metrics if target is in test
     if args.target_col in test.columns:
-        actuals = test[args.target_col].values
-        preds = predictions[args.target_col].values
+        merged = test[["id", args.target_col]].merge(predictions, on="id")
+        actuals = merged[args.target_col + "_x"].values
+        preds = merged[args.target_col + "_y"].values
         rmsle = np.sqrt(mean_squared_error(np.log1p(actuals), np.log1p(preds)))
         rmse = np.sqrt(mean_squared_error(actuals, preds))
         mae = mean_absolute_error(actuals, preds)
