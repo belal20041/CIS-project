@@ -4,7 +4,6 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 import missingno as msno
-from scipy.stats import zscore
 from sklearn.preprocessing import StandardScaler, LabelEncoder
 from statsmodels.tsa.seasonal import seasonal_decompose
 from statsmodels.graphics.tsaplots import plot_acf, plot_pacf
@@ -28,17 +27,14 @@ def detect_column_types(df, date_col):
                        (df[col].dtype in ['object', 'category', 'bool'] or df[col].nunique() / len(df) < 0.05)]
     return numeric_cols, categorical_cols
 
-def load_data(train_file, test_file, date_col, target_col):
-    train = pd.read_csv(train_file)
-    test = pd.read_csv(test_file)
-    train[date_col] = pd.to_datetime(train[date_col])
-    test[date_col] = pd.to_datetime(test[date_col], format='%d-%m-%Y')
-    train[['store_nbr', 'onpromotion']] = train[['store_nbr', 'onpromotion']].astype('int32')
-    test[['store_nbr', 'onpromotion']] = test[['store_nbr', 'onpromotion']].astype('int32')
-    train[target_col] = train[target_col].astype('float32')
-    train.dropna(subset=[date_col], inplace=True)
-    test.dropna(subset=[date_col], inplace=True)
-    return train, test
+def load_data(file, date_col, target_col):
+    df = pd.read_csv(file)
+    df[date_col] = pd.to_datetime(df[date_col])
+    df[['store_nbr', 'onpromotion']] = df[['store_nbr', 'onpromotion']].astype('int32')
+    if target_col in df.columns:
+        df[target_col] = df[target_col].astype('float32')
+    df.dropna(subset=[date_col], inplace=True)
+    return df
 
 def prepare_data(train, test, date_col, target_col):
     train['is_train'] = 1
@@ -74,9 +70,9 @@ def add_features(combined, date_col, target_col):
     combined[feature_cols] = StandardScaler().fit_transform(combined[feature_cols].fillna(0)).astype('float32')
     return combined
 
-def split_data(combined, date_col):
+def split_data(combined, date_col, target_col):
     train = combined[combined['is_train'] == 1]
-    test = combined[combined['is_train'] == 0]
+    test = combined[combined['is_train'] == 0].drop([target_col], axis=1)
     train_set = train[train[date_col] <= TRAIN_END]
     val_set = train[(train[date_col] > TRAIN_END) & (train[date_col] <= VAL_END)]
     return train_set, val_set, test
@@ -87,174 +83,218 @@ def get_download_file(df, filename):
     buf.seek(0)
     return buf.getvalue(), 'text/csv'
 
-def explore_data(train_set, date_col, target_col, numeric_cols, categorical_cols, dataset_type):
+def explore_data(df, date_col, target_col, numeric_cols, categorical_cols, dataset_type):
     temp_dir = tempfile.gettempdir()
     col1, col2 = st.columns(2)
     with col1:
-        st.write("Shape:", train_set.shape)
-        st.write("Missing:", train_set.isna().sum().to_dict())
-        st.write("Duplicates:", train_set.duplicated().sum())
+        st.write("Shape:", df.shape)
+        st.write("Missing:", df.isna().sum().to_dict())
+        st.write("Duplicates:", df.duplicated().sum())
     with col2:
-        st.write("Types:", train_set.dtypes.to_dict())
-        st.write("Uniques:", train_set.nunique().to_dict())
+        st.write("Types:", df.dtypes.to_dict())
+        st.write("Uniques:", df.nunique().to_dict())
 
     with st.expander("Visualizations"):
         fig, ax = plt.subplots(figsize=(8, 3))
-        msno.matrix(train_set, ax=ax)
+        msno.matrix(df, ax=ax)
         plt.savefig(os.path.join(temp_dir, f"{dataset_type}_missing.png"))
         st.pyplot(fig)
         plt.close(fig)
 
-        fig, ax = plt.subplots(figsize=(8, 3))
-        sns.lineplot(x=date_col, y=target_col, data=train_set, ax=ax)
-        plt.xticks(rotation=45)
-        plt.savefig(os.path.join(temp_dir, f"{dataset_type}_trends.png"))
-        st.pyplot(fig)
-        plt.close(fig)
+        if target_col in df.columns:
+            fig, ax = plt.subplots(figsize=(8, 3))
+            sns.lineplot(x=date_col, y=target_col, data=df, ax=ax)
+            plt.xticks(rotation=45)
+            plt.savefig(os.path.join(temp_dir, f"{dataset_type}_trends.png"))
+            st.pyplot(fig)
+            plt.close(fig)
 
-        df_weekly = train_set.set_index(date_col)[target_col].resample('W').sum().reset_index()
-        fig, ax = plt.subplots(figsize=(8, 3))
-        sns.lineplot(x=date_col, y=target_col, data=df_weekly, ax=ax)
-        plt.xticks(rotation=45)
-        plt.savefig(os.path.join(temp_dir, f"{dataset_type}_weekly.png"))
-        st.pyplot(fig)
-        plt.close(fig)
+            df_weekly = df.set_index(date_col)[target_col].resample('W').sum().reset_index()
+            fig, ax = plt.subplots(figsize=(8, 3))
+            sns.lineplot(x=date_col, y=target_col, data=df_weekly, ax=ax)
+            plt.xticks(rotation=45)
+            plt.savefig(os.path.join(temp_dir, f"{dataset_type}_weekly.png"))
+            st.pyplot(fig)
+            plt.close(fig)
 
-        train_set['month'] = train_set[date_col].dt.month
-        fig, ax = plt.subplots(figsize=(8, 3))
-        sns.boxplot(x='month', y=target_col, data=train_set, ax=ax)
-        plt.savefig(os.path.join(temp_dir, f"{dataset_type}_seasonal.png"))
-        st.pyplot(fig)
-        plt.close(fig)
+            df['month'] = df[date_col].dt.month
+            fig, ax = plt.subplots(figsize=(8, 3))
+            sns.boxplot(x='month', y=target_col, data=df, ax=ax)
+            plt.savefig(os.path.join(temp_dir, f"{dataset_type}_seasonal.png"))
+            st.pyplot(fig)
+            plt.close(fig)
 
-        rolling = train_set.set_index(date_col)[target_col].rolling(window=30).agg(['mean', 'std']).dropna()
-        fig, ax = plt.subplots(figsize=(8, 3))
-        rolling['mean'].plot(ax=ax, label='Mean')
-        rolling['std'].plot(ax=ax, label='Std', alpha=0.5)
-        plt.legend()
-        plt.xticks(rotation=45)
-        plt.savefig(os.path.join(temp_dir, f"{dataset_type}_rolling.png"))
-        st.pyplot(fig)
-        plt.close(fig)
+            rolling = df.set_index(date_col)[target_col].rolling(window=30).agg(['mean', 'std']).dropna()
+            fig, ax = plt.subplots(figsize=(8, 3))
+            rolling['mean'].plot(ax=ax, label='Mean')
+            rolling['std'].plot(ax=ax, label='Std', alpha=0.5)
+            plt.legend()
+            plt.xticks(rotation=45)
+            plt.savefig(os.path.join(temp_dir, f"{dataset_type}_rolling.png"))
+            st.pyplot(fig)
+            plt.close(fig)
 
-        df_ts = train_set.set_index(date_col)[target_col].resample('M').sum()
-        decomp = seasonal_decompose(df_ts, model='additive', period=12)
-        fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(8, 6))
-        decomp.trend.plot(ax=ax1)
-        decomp.seasonal.plot(ax=ax2)
-        decomp.resid.plot(ax=ax3)
-        plt.savefig(os.path.join(temp_dir, f"{dataset_type}_decomp.png"))
-        st.pyplot(fig)
-        plt.close(fig)
+            df_ts = df.set_index(date_col)[target_col].resample('M').sum()
+            decomp = seasonal_decompose(df_ts, model='additive', period=12)
+            fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(8, 6))
+            decomp.trend.plot(ax=ax1)
+            decomp.seasonal.plot(ax=ax2)
+            decomp.resid.plot(ax=ax3)
+            plt.savefig(os.path.join(temp_dir, f"{dataset_type}_decomp.png"))
+            st.pyplot(fig)
+            plt.close(fig)
 
-        fig, ax = plt.subplots(figsize=(8, 3))
-        plot_acf(train_set[target_col].dropna(), lags=30, ax=ax)
-        plt.savefig(os.path.join(temp_dir, f"{dataset_type}_acf.png"))
-        st.pyplot(fig)
-        plt.close(fig)
+            fig, ax = plt.subplots(figsize=(8, 3))
+            plot_acf(df[target_col].dropna(), lags=30, ax=ax)
+            plt.savefig(os.path.join(temp_dir, f"{dataset_type}_acf.png"))
+            st.pyplot(fig)
+            plt.close(fig)
 
-        fig, ax = plt.subplots(figsize=(8, 3))
-        plot_pacf(train_set[target_col].dropna(), lags=30, ax=ax)
-        plt.savefig(os.path.join(temp_dir, f"{dataset_type}_pacf.png"))
-        st.pyplot(fig)
-        plt.close(fig)
+            fig, ax = plt.subplots(figsize=(8, 3))
+            plot_pacf(df[target_col].dropna(), lags=30, ax=ax)
+            plt.savefig(os.path.join(temp_dir, f"{dataset_type}_pacf.png"))
+            st.pyplot(fig)
+            plt.close(fig)
 
-        fig, ax = plt.subplots(figsize=(8, 3))
-        pd.plotting.lag_plot(train_set[target_col], lag=1, ax=ax)
-        plt.savefig(os.path.join(temp_dir, f"{dataset_type}_lag.png"))
-        st.pyplot(fig)
-        plt.close(fig)
+            fig, ax = plt.subplots(figsize=(8, 3))
+            pd.plotting.lag_plot(df[target_col], lag=1, ax=ax)
+            plt.savefig(os.path.join(temp_dir, f"{dataset_type}_lag.png"))
+            st.pyplot(fig)
+            plt.close(fig)
 
-        freq, psd = periodogram(train_set[target_col].dropna())
-        fig, ax = plt.subplots(figsize=(8, 3))
-        ax.plot(freq, psd)
-        plt.savefig(os.path.join(temp_dir, f"{dataset_type}_periodogram.png"))
-        st.pyplot(fig)
-        plt.close(fig)
+            freq, psd = periodogram(df[target_col].dropna())
+            fig, ax = plt.subplots(figsize=(8, 3))
+            ax.plot(freq, psd)
+            plt.savefig(os.path.join(temp_dir, f"{dataset_type}_periodogram.png"))
+            st.pyplot(fig)
+            plt.close(fig)
 
-        store, family = 1, 'AUTOMOTIVE'
-        ts = train_set[(train_set['store_nbr'] == store) & (train_set['family'] == family)][target_col]
-        fig, ax = plt.subplots(figsize=(8, 3))
-        plt.plot(ts, label='Sales')
-        plt.plot(ts.rolling(30).mean(), label='30-Day Mean', color='red')
-        plt.plot(ts.rolling(30).std(), label='30-Day Std', color='black')
-        plt.legend()
-        plt.savefig(os.path.join(temp_dir, f"{dataset_type}_stationarity.png"))
-        st.pyplot(fig)
-        plt.close(fig)
+            store, family = 1, 'AUTOMOTIVE'
+            ts = df[(df['store_nbr'] == store) & (df['family'] == family)][target_col]
+            fig, ax = plt.subplots(figsize=(8, 3))
+            plt.plot(ts, label='Sales')
+            plt.plot(ts.rolling(30).mean(), label='30-Day Mean', color='red')
+            plt.plot(ts.rolling(30).std(), label='30-Day Std', color='black')
+            plt.legend()
+            plt.savefig(os.path.join(temp_dir, f"{dataset_type}_stationarity.png"))
+            st.pyplot(fig)
+            plt.close(fig)
 
-        ts_diff = ts.diff().dropna()
-        fig, ax = plt.subplots(figsize=(8, 3))
-        plot_acf(ts_diff, lags=20, ax=ax)
-        plt.savefig(os.path.join(temp_dir, f"{dataset_type}_acf_diff.png"))
-        st.pyplot(fig)
-        plt.close(fig)
+            ts_diff = ts.diff().dropna()
+            fig, ax = plt.subplots(figsize=(8, 3))
+            plot_acf(ts_diff, lags=20, ax=ax)
+            plt.savefig(os.path.join(temp_dir, f"{dataset_type}_acf_diff.png"))
+            st.pyplot(fig)
+            plt.close(fig)
 
         for col in ['family', 'store_nbr']:
-            if col in train_set.columns:
+            if col in df.columns and target_col in df.columns:
                 fig, ax = plt.subplots(figsize=(8, 3))
-                sns.boxplot(x=col, y=target_col, data=train_set, ax=ax)
+                sns.boxplot(x=col, y=target_col, data=df, ax=ax)
                 plt.xticks(rotation=45)
                 plt.savefig(os.path.join(temp_dir, f"{dataset_type}_sales_{col}.png"))
                 st.pyplot(fig)
                 plt.close(fig)
 
-        if target_col in train_set.columns and 'onpromotion' in train_set.columns:
+        if target_col in df.columns and 'onpromotion' in df.columns:
             fig, ax = plt.subplots(figsize=(8, 3))
-            sns.boxplot(x='onpromotion', y=target_col, data=train_set, ax=ax)
+            sns.boxplot(x='onpromotion', y=target_col, data=df, ax=ax)
             plt.savefig(os.path.join(temp_dir, f"{dataset_type}_promo.png"))
             st.pyplot(fig)
             plt.close(fig)
 
-        if target_col in train_set.columns:
+        if target_col in df.columns:
             fig, ax = plt.subplots(figsize=(8, 3))
-            sns.histplot(train_set[target_col], bins=30, kde=True, ax=ax)
+            sns.histplot(df[target_col], bins=30, kde=True, ax=ax)
             plt.savefig(os.path.join(temp_dir, f"{dataset_type}_dist.png"))
             st.pyplot(fig)
             plt.close(fig)
 
 def main():
-    train_file = st.file_uploader("Train Data", ['csv'], key="train")
-    test_file = st.file_uploader("Test Data", ['csv'], key="test")
-    if train_file and test_file:
-        train = pd.read_csv(train_file)
-        with st.form("config"):
-            date_col = st.selectbox("Date", train.columns)
-            target_col = st.selectbox("Target", train.columns)
-            numeric_cols, categorical_cols = detect_column_types(train, date_col)
-            numeric_cols = st.multiselect("Numeric", train.columns, default=numeric_cols)
-            categorical_cols = st.multiselect("Categorical", train.columns, default=categorical_cols)
-            outlier_method = st.selectbox("Outliers", ['None', 'Remove', 'Replace'])
-            outlier_method = outlier_method.lower() if outlier_method != 'None' else None
-            scale = st.checkbox("Scale")
-            st.form_submit_button("Apply", on_click=lambda: st.session_state.update({
-                'date_col': date_col, 'target_col': target_col, 'numeric_cols': numeric_cols,
-                'categorical_cols': categorical_cols, 'outlier_method': outlier_method, 'scale': scale
-            }))
+    train_tab, test_tab = st.tabs(["Train", "Test"])
 
-        with st.form("process"):
-            if st.form_submit_button("Run"):
-                train, test = load_data(train_file, test_file, st.session_state['date_col'], st.session_state['target_col'])
-                combined = prepare_data(train, test, st.session_state['date_col'], st.session_state['target_col'])
-                combined = fill_missing(combined, st.session_state['target_col'])
-                combined = add_features(combined, st.session_state['date_col'], st.session_state['target_col'])
-                train_set, val_set, test = split_data(combined, st.session_state['date_col'])
+    with train_tab:
+        train_file = st.file_uploader("Train Data", ['csv'], key="train")
+        if train_file:
+            train = pd.read_csv(train_file)
+            st.dataframe(train.head(), height=100)
 
+            with st.form("train_config"):
+                date_col = st.selectbox("Date", train.columns, key="train_date")
+                target_col = st.selectbox("Target", train.columns, key="train_target")
+                numeric_cols, categorical_cols = detect_column_types(train, date_col)
+                numeric_cols = st.multiselect("Numeric", train.columns, default=numeric_cols, key="train_numeric")
+                categorical_cols = st.multiselect("Categorical", train.columns, default=categorical_cols, key="train_categorical")
+                outlier_method = st.selectbox("Outliers", ['None', 'Remove', 'Replace'], key="train_outlier")
+                outlier_method = outlier_method.lower() if outlier_method != 'None' else None
+                scale = st.checkbox("Scale", key="train_scale")
+                st.form_submit_button("Apply", on_click=lambda: st.session_state.update({
+                    'train_date_col': date_col, 'train_target_col': target_col, 'train_numeric_cols': numeric_cols,
+                    'train_categorical_cols': categorical_cols, 'train_outlier_method': outlier_method, 'train_scale': scale
+                }))
+
+            with st.form("train_process"):
+                if st.form_submit_button("Run"):
+                    train = load_data(train_file, st.session_state['train_date_col'], st.session_state['train_target_col'])
+                    st.session_state['train_df'] = train
+                    explore_data(train, st.session_state['train_date_col'], st.session_state['train_target_col'], 
+                                 st.session_state['train_numeric_cols'], st.session_state['train_categorical_cols'], "train")
+                    st.dataframe(train.head(), height=100)
+                    csv_data, mime = get_download_file(train, "train_processed.csv")
+                    st.download_button("Download Train", csv_data, "train_processed.csv", mime, key="train_download")
+
+    with test_tab:
+        test_file = st.file_uploader("Test Data", ['csv'], key="test")
+        if test_file:
+            test = pd.read_csv(test_file)
+            st.dataframe(test.head(), height=100)
+
+            with st.form("test_config"):
+                date_col = st.selectbox("Date", test.columns, key="test_date")
+                numeric_cols, categorical_cols = detect_column_types(test, date_col)
+                numeric_cols = st.multiselect("Numeric", test.columns, default=numeric_cols, key="test_numeric")
+                categorical_cols = st.multiselect("Categorical", test.columns, default=categorical_cols, key="test_categorical")
+                outlier_method = st.selectbox("Outliers", ['None', 'Remove', 'Replace'], key="test_outlier")
+                outlier_method = outlier_method.lower() if outlier_method != 'None' else None
+                scale = st.checkbox("Scale", key="test_scale")
+                st.form_submit_button("Apply", on_click=lambda: st.session_state.update({
+                    'test_date_col': date_col, 'test_numeric_cols': numeric_cols, 'test_categorical_cols': categorical_cols,
+                    'test_outlier_method': outlier_method, 'test_scale': scale
+                }))
+
+            with st.form("test_process"):
+                if st.form_submit_button("Run"):
+                    test = load_data(test_file, st.session_state['test_date_col'], '')
+                    st.session_state['test_df'] = test
+                    explore_data(test, st.session_state['test_date_col'], st.session_state.get('train_target_col', ''), 
+                                 st.session_state['test_numeric_cols'], st.session_state['test_categorical_cols'], "test")
+                    st.dataframe(test.head(), height=100)
+                    csv_data, mime = get_download_file(test, "test_processed.csv")
+                    st.download_button("Download Test", csv_data, "test_processed.csv", mime, key="test_download")
+
+    if 'train_df' in st.session_state and 'test_df' in st.session_state:
+        with st.form("feature_engineering"):
+            if st.form_submit_button("Run Features"):
+                combined = prepare_data(st.session_state['train_df'], st.session_state['test_df'], 
+                                       st.session_state['train_date_col'], st.session_state['train_target_col'])
+                combined = fill_missing(combined, st.session_state['train_target_col'])
+                combined = combined.drop(columns=['lag_7', 'lag_14', 'roll_mean_7'], errors='ignore')
+                combined = add_features(combined, st.session_state['train_date_col'], st.session_state['train_target_col'])
+                train_set, val_set, test = split_data(combined, st.session_state['train_date_col'], st.session_state['train_target_col'])
+                st.session_state['train_set'] = train_set
+                st.session_state['val_set'] = val_set
+                st.session_state['test_set'] = test
                 st.dataframe(train_set.head(), height=100)
                 st.dataframe(val_set.head(), height=100)
                 st.dataframe(test.head(), height=100)
+                csv_data, mime = get_download_file(train_set, "train_fe.csv")
+                st.download_button("Download Train Features", csv_data, "train_fe.csv", mime, key="train_fe_download")
+                csv_data, mime = get_download_file(val_set, "val_fe.csv")
+                st.download_button("Download Validation Features", csv_data, "val_fe.csv", mime, key="val_fe_download")
+                csv_data, mime = get_download_file(test, "test_fe.csv")
+                st.download_button("Download Test Features", csv_data, "test_fe.csv", mime, key="test_fe_download")
 
-                explore_data(train_set, st.session_state['date_col'], st.session_state['target_col'], 
-                             st.session_state['numeric_cols'], st.session_state['categorical_cols'], "train")
-
-                csv_data, mime = get_download_file(train_set, "train_processed.csv")
-                st.download_button("Download Train", csv_data, "train_processed.csv", mime, key="train_download")
-                csv_data, mime = get_download_file(val_set, "val_processed.csv")
-                st.download_button("Download Validation", csv_data, "val_processed.csv", mime, key="val_download")
-                csv_data, mime = get_download_file(test, "test_processed.csv")
-                st.download_button("Download Test", csv_data, "test_processed.csv", mime, key="test_download")
-
-    st.markdown("By Belal Khamis@all rights reserved")
+    st.markdown("**By Belal Khamis, Marwa Kotb, Mahmoud Sabry, Mohamed Samy, Hoda Magdy**")
 
 if __name__ == "__main__":
     main()
