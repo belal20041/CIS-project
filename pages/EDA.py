@@ -28,6 +28,8 @@ def detect_column_types(df, date_col):
     return numeric_cols, categorical_cols
 
 def load_data(file, date_col, target_col):
+    if hasattr(file, 'seek'):
+        file.seek(0)  # Rewind file buffer to ensure proper reading
     df = pd.read_csv(file)
     df[date_col] = pd.to_datetime(df[date_col])
     df[['store_nbr', 'onpromotion']] = df[['store_nbr', 'onpromotion']].astype('int32')
@@ -216,15 +218,19 @@ def main():
     with train_tab:
         train_file = st.file_uploader("Train Data", ['csv'], key="train")
         if train_file:
+            # Reset train configuration when a new file is uploaded
+            if 'train_file' in st.session_state and st.session_state['train_file'] != train_file:
+                for key in ['train_date_col', 'train_target_col', 'train_numeric_cols', 'train_categorical_cols', 'train_outlier_method', 'train_scale', 'train_configured', 'train_df']:
+                    st.session_state.pop(key, None)
             with st.form("train_config"):
-                train = pd.read_csv(train_file)
+                train = load_data(train_file, 'date', None)  # Temporary load for preview
                 st.dataframe(train.head(), height=100)
-                date_col = st.selectbox("Date", train.columns, key="train_date")
+                date_col = st.selectbox("Date", train.columns, index=train.columns.tolist().index('date') if 'date' in train.columns else 0, key="train_date")
                 target_col = st.selectbox("Target", train.columns, key="train_target")
                 numeric_cols, categorical_cols = detect_column_types(train, date_col)
-                numeric_cols = st.multiselect("Numeric", train.columns, default=numeric_cols, key="train_numeric")
-                categorical_cols = st.multiselect("Categorical", train.columns, default=categorical_cols, key="train_categorical")
-                outlier_method = st.selectbox("Outliers", ['None', 'Remove', 'Replace'], key="train_outlier")
+                numeric_cols = st.multiselect("Numeric", train.columns, default=['id', 'store_nbr', 'onpromotion', 'cluster', 'dcoilwtico'] if 'store_nbr' in train.columns else numeric_cols, key="train_numeric")
+                categorical_cols = st.multiselect("Categorical", train.columns, default=['store_nbr', 'family', 'onpromotion', 'city', 'state', 'type_x', 'cluster', 'type_y', 'locale', 'locale_name', 'description', 'transferred', 'dcoilwtico'] if 'family' in train.columns else categorical_cols, key="train_categorical")
+                outlier_method = st.selectbox("Outliers", ['None', 'Remove', 'Replace'], index=2, key="train_outlier")
                 outlier_method = outlier_method.lower() if outlier_method != 'None' else None
                 scale = st.checkbox("Scale", key="train_scale")
                 st.form_submit_button("Apply", on_click=lambda: st.session_state.update({
@@ -252,13 +258,13 @@ def main():
                 for key in ['test_date_col', 'test_numeric_cols', 'test_categorical_cols', 'test_outlier_method', 'test_scale', 'test_configured', 'test_df']:
                     st.session_state.pop(key, None)
             with st.form("test_config"):
-                test = pd.read_csv(test_file)
+                test = load_data(test_file, 'date', None)  # Temporary load for preview
                 st.dataframe(test.head(), height=100)
-                date_col = st.selectbox("Date", test.columns, key="test_date")
+                date_col = st.selectbox("Date", test.columns, index=test.columns.tolist().index('date') if 'date' in test.columns else 0, key="test_date")
                 numeric_cols, categorical_cols = detect_column_types(test, date_col)
-                numeric_cols = st.multiselect("Numeric", test.columns, default=numeric_cols, key="test_numeric")
-                categorical_cols = st.multiselect("Categorical", test.columns, default=categorical_cols, key="test_categorical")
-                outlier_method = st.selectbox("Outliers", ['None', 'Remove', 'Replace'], key="test_outlier")
+                numeric_cols = st.multiselect("Numeric", test.columns, default=['id', 'store_nbr', 'onpromotion', 'cluster', 'dcoilwtico'] if 'store_nbr' in test.columns else numeric_cols, key="test_numeric")
+                categorical_cols = st.multiselect("Categorical", test.columns, default=['store_nbr', 'family', 'onpromotion', 'city', 'state', 'type_x', 'cluster', 'type_y', 'locale', 'locale_name', 'description', 'transferred', 'dcoilwtico'] if 'family' in test.columns else categorical_cols, key="test_categorical")
+                outlier_method = st.selectbox("Outliers", ['None', 'Remove', 'Replace'], index=2, key="test_outlier")
                 outlier_method = outlier_method.lower() if outlier_method != 'None' else None
                 scale = st.checkbox("Scale", key="test_scale")
                 st.form_submit_button("Apply", on_click=lambda: st.session_state.update({
