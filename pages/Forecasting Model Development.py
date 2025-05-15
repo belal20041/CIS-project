@@ -345,11 +345,16 @@ with training_tab:
                         plot_path = os.path.join(temp_dir, "lr_pred.png")
                         plt.savefig(plot_path)
                         plt.close()
+                        # Store predictions per group for consistency
+                        pred_dict = {}
+                        for (store, family), group in val_set.groupby(['store_nbr', 'family']):
+                            mask = val_set.index.isin(group.index)
+                            pred_dict[(store, family)] = y_pred[mask].tolist()
                         st.session_state.model_results[model_name] = {
                             'metrics': metrics,
                             'plot_path': plot_path,
-                            'y_val': y_val.values,
-                            'y_pred': y_pred
+                            'y_val': y_val.values.tolist(),
+                            'y_pred': pred_dict
                         }
                     
                     elif model_name == "XGBoost":
@@ -376,11 +381,16 @@ with training_tab:
                         plot_path = os.path.join(temp_dir, "xgb_pred.png")
                         plt.savefig(plot_path)
                         plt.close()
+                        # Store predictions per group
+                        pred_dict = {}
+                        for (store, family), group in val_set.groupby(['store_nbr', 'family']):
+                            mask = val_set.index.isin(group.index)
+                            pred_dict[(store, family)] = y_pred[mask].tolist()
                         st.session_state.model_results[model_name] = {
                             'metrics': metrics,
                             'plot_path': plot_path,
-                            'y_val': y_val.values,
-                            'y_pred': y_pred
+                            'y_val': y_val.values.tolist(),
+                            'y_pred': pred_dict
                         }
                     
                     elif model_name == "ARIMA":
@@ -458,7 +468,7 @@ with training_tab:
                         prophet_preds = {}
                         for (store, family), group in train_set.groupby(['store_nbr', 'family']):
                             df = group[['date', 'sales']].rename(columns={'date': 'ds', 'sales': 'y'})
-                            model = Prophet(yearly_seasonality=True, weekly_seasonality  =True, daily_seasonality=True)
+                            model = Prophet(yearly_seasonality=True, weekly_seasonality=True, daily_seasonality=True)
                             model.fit(df)
                             prophet_preds[(store, family)] = model.predict(pd.DataFrame({'ds': val_dates}))['yhat'].values
                         actuals = []
@@ -502,11 +512,13 @@ with training_tab:
                         y_train = np.array(y_train)
                         X_val = []
                         y_val = []
-                        for _, g in val_set.groupby(['store_nbr', 'family']):
+                        val_indices = []
+                        for (store, family), g in val_set.groupby(['store_nbr', 'family']):
                             g = g.sort_values('date')
                             for i in range(len(g) - seq_length):
                                 X_val.append(g.iloc[i:i+seq_length][feature_cols].values)
                                 y_val.append(g.iloc[i+seq_length]['sales'])
+                                val_indices.append((store, family, i))
                         X_val = np.array(X_val)
                         y_val = np.array(y_val)
                         model = Sequential([LSTM(50, activation='relu', input_shape=(seq_length, len(feature_cols))), Dense(1)])
@@ -529,11 +541,17 @@ with training_tab:
                         plot_path = os.path.join(temp_dir, "lstm_pred.png")
                         plt.savefig(plot_path)
                         plt.close()
+                        # Store predictions per group
+                        pred_dict = {}
+                        for (store, family, _), pred in zip(val_indices, y_pred):
+                            if (store, family) not in pred_dict:
+                                pred_dict[(store, family)] = []
+                            pred_dict[(store, family)].append(pred)
                         st.session_state.model_results[model_name] = {
                             'metrics': metrics,
                             'plot_path': plot_path,
-                            'y_val': y_val,
-                            'y_pred': y_pred
+                            'y_val': y_val.tolist(),
+                            'y_pred': {k: v for k, v in pred_dict.items()}
                         }
                     
                     # Display metrics
@@ -576,21 +594,18 @@ with prediction_tab:
                     metrics = result['metrics']
                     plot_path = result['plot_path']
                     
-                    # Filter predictions for selected store and family
+                    # Filter validation set for selected store and family
                     val_set = st.session_state.val_set
                     mask = (val_set['store_nbr'] == store_nbr) & (val_set['family'] == family)
                     if mask.sum() > 0:
                         group = val_set[mask].sort_values('date')
                         actual = group['sales'].values[:100]
-                        # For models with predictions aligned with val_set
-                        if model_name in ["XGBoost", "Linear Regression", "LSTM"]:
-                            pred = result['y_pred'][val_set.index[mask]][:100]
-                        # For models with per-group predictions
-                        else:
-                            key = (store_nbr, family)
-                            pred = np.array(result['y_pred'].get(key, []))[:100]
                         
+                        # Get predictions for the selected store-family pair
+                        key = (store_nbr, family)
+                        pred = result['y_pred'].get(key)
                         if pred is not None and len(pred) > 0:
+                            pred = np.array(pred)[:100]
                             # Plot actual vs predicted
                             plt.figure(figsize=(10, 5))
                             plt.plot(actual, label='Actual', color='blue')
