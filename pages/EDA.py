@@ -230,18 +230,20 @@ def main():
                 scale = st.checkbox("Scale", key="train_scale")
                 st.form_submit_button("Apply", on_click=lambda: st.session_state.update({
                     'train_date_col': date_col, 'train_target_col': target_col, 'train_numeric_cols': numeric_cols,
-                    'train_categorical_cols': categorical_cols, 'train_outlier_method': outlier_method, 'train_scale': scale
+                    'train_categorical_cols': categorical_cols, 'train_outlier_method': outlier_method, 'train_scale': scale,
+                    'train_configured': True
                 }))
 
-            with st.form("train_process"):
-                if st.form_submit_button("Run") and 'train_date_col' in st.session_state:
-                    train = load_data(train_file, st.session_state['train_date_col'], st.session_state['train_target_col'])
-                    st.session_state['train_df'] = train
-                    explore_data(train, st.session_state['train_date_col'], st.session_state['train_target_col'], 
-                                 st.session_state['train_numeric_cols'], st.session_state['train_categorical_cols'], "train")
-                    st.dataframe(train.head(), height=100)
-                    csv_data, mime = get_download_file(train, "train_processed.csv")
-                    st.download_button("Download Train", csv_data, "train_processed.csv", mime, key="train_download")
+            if 'train_configured' in st.session_state and st.session_state['train_configured']:
+                with st.form("train_process"):
+                    if st.form_submit_button("Run"):
+                        train = load_data(train_file, st.session_state['train_date_col'], st.session_state['train_target_col'])
+                        st.session_state['train_df'] = train
+                        explore_data(train, st.session_state['train_date_col'], st.session_state['train_target_col'], 
+                                     st.session_state['train_numeric_cols'], st.session_state['train_categorical_cols'], "train")
+                        st.dataframe(train.head(), height=100)
+                        csv_data, mime = get_download_file(train, "train_processed.csv")
+                        st.download_button("Download Train", csv_data, "train_processed.csv", mime, key="train_download")
 
     with test_tab:
         test_file = st.file_uploader("Test Data", ['csv'], key="test")
@@ -259,18 +261,19 @@ def main():
                 scale = st.checkbox("Scale", key="test_scale")
                 st.form_submit_button("Apply", on_click=lambda: st.session_state.update({
                     'test_date_col': date_col, 'test_numeric_cols': numeric_cols, 'test_categorical_cols': categorical_cols,
-                    'test_outlier_method': outlier_method, 'test_scale': scale
+                    'test_outlier_method': outlier_method, 'test_scale': scale, 'test_configured': True
                 }))
 
-            with st.form("test_process"):
-                if st.form_submit_button("Run") and 'test_date_col' in st.session_state:
-                    test = load_data(test_file, st.session_state['test_date_col'], None)
-                    st.session_state['test_df'] = test
-                    explore_data(test, st.session_state['test_date_col'], st.session_state.get('train_target_col', None), 
-                                 st.session_state['test_numeric_cols'], st.session_state['test_categorical_cols'], "test")
-                    st.dataframe(test.head(), height=100)
-                    csv_data, mime = get_download_file(test, "test_processed.csv")
-                    st.download_button("Download Test", csv_data, "test_processed.csv", mime, key="test_download")
+            if 'test_configured' in st.session_state and st.session_state['test_configured']:
+                with st.form("test_process"):
+                    if st.form_submit_button("Run"):
+                        test = load_data(test_file, st.session_state['test_date_col'], None)
+                        st.session_state['test_df'] = test
+                        explore_data(test, st.session_state['test_date_col'], st.session_state.get('train_target_col', None), 
+                                     st.session_state['test_numeric_cols'], st.session_state['test_categorical_cols'], "test")
+                        st.dataframe(test.head(), height=100)
+                        csv_data, mime = get_download_file(test, "test_processed.csv")
+                        st.download_button("Download Test", csv_data, "test_processed.csv", mime, key="test_download")
 
     if 'train_df' in st.session_state and 'test_df' in st.session_state:
         with st.form("feature_engineering"):
