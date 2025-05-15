@@ -32,8 +32,8 @@ if "processed_data" not in st.session_state:
     st.session_state.scaler = None
     st.session_state.le_store = None
     st.session_state.le_family = None
-    st.session_state.date_column = "date"
-    st.session_state.target_column = "sales"
+    st.session_state.date_column = "date"  # Matches your column name
+    st.session_state.target_column = "sales"  # Matches your column name
     st.session_state.predictions = {}
 
 def load_and_process_data(train_file, test_file, date_col="date", target_col="sales"):
@@ -43,19 +43,40 @@ def load_and_process_data(train_file, test_file, date_col="date", target_col="sa
             st.error("Please upload both train and test CSV files.")
             return None, None, None, None, None, None
 
+        # Read a small sample to check columns
+        train_sample = pd.read_csv(train_file, nrows=1)
+        test_sample = pd.read_csv(test_file, nrows=1)
+        st.write(f"Train CSV columns: {train_sample.columns.tolist()}")
+        st.write(f"Test CSV columns: {test_sample.columns.tolist()}")
+
+        if date_col not in train_sample.columns or date_col not in test_sample.columns:
+            st.error(f"Date column '{date_col}' not found. Train columns: {train_sample.columns.tolist()}, Test columns: {test_sample.columns.tolist()}")
+            return None, None, None, None, None, None
+        if target_col not in train_sample.columns:
+            st.error(f"Target column '{target_col}' not found in train CSV. Columns: {train_sample.columns.tolist()}")
+            return None, None, None, None, None, None
+
         # Define dtypes
         dtypes = {
             "store_nbr": "int32",
             "family": "category",
             "onpromotion": "int32",
             target_col: "float32",
-            "id": "int32"
+            "id": "int32",
+            "city": "category",
+            "state": "category",
+            "type_x": "category",
+            "cluster": "int32",
+            "transactions": "int32",
+            "type_y": "category",
+            "locale": "category",
+            "locale_name": "category",
+            "description": "category",
+            "transferred": "bool",
+            "dcoilwtico": "float32"
         }
-        optional_cols = ["city", "state", "cluster", "transactions", "dcoilwtico", "locale"]
-        for col in optional_cols:
-            dtypes[col] = "category" if col in ["city", "state", "locale"] else "float32"
 
-        # Load data
+        # Load full data
         train = pd.read_csv(train_file, dtype=dtypes, parse_dates=[date_col])
         test = pd.read_csv(test_file, dtype=dtypes, parse_dates=[date_col])
 
@@ -63,9 +84,9 @@ def load_and_process_data(train_file, test_file, date_col="date", target_col="sa
         train = train.drop(columns=[col for col in train.columns if col.startswith("Unnamed")], errors="ignore")
         test = test.drop(columns=[col for col in test.columns if col.startswith("Unnamed")], errors="ignore")
 
-        # Validate data
-        if train[date_col].isna().any() or test[date_col].isna().any():
-            st.error(f"Invalid dates in '{date_col}' column.")
+        # Validate date parsing
+        if train[date_col].isna().all() or test[date_col].isna().all():
+            st.error(f"No valid dates found in '{date_col}' column after parsing. Please ensure the dates are in a recognizable format (e.g., YYYY-MM-DD).")
             return None, None, None, None, None, None
         if not pd.to_numeric(train[target_col], errors="coerce").notna().all():
             st.error(f"Target column '{target_col}' contains non-numeric values.")
@@ -90,8 +111,8 @@ def load_and_process_data(train_file, test_file, date_col="date", target_col="sa
         train["family_encoded"] = le_family.fit_transform(train["family"]).astype("int8")
         test["family_encoded"] = le_family.transform(test["family"]).astype("int8")
 
-        # Encode optional categoricals
-        for col in ["city", "state", "locale"]:
+        # Encode additional categoricals
+        for col in ["city", "state", "locale", "type_x", "type_y"]:
             if col in train.columns and col in test.columns:
                 le = LabelEncoder()
                 train[f"{col}_encoded"] = le.fit_transform(train[col]).astype("int8")
@@ -107,8 +128,9 @@ def load_and_process_data(train_file, test_file, date_col="date", target_col="sa
 
         # Features for XGBoost/LSTM
         feature_cols = ["store_nbr_encoded", "family_encoded", "onpromotion", 
-                        "month", "day", "dow", "is_weekend", "lag_7", "lag_14"]
-        for col in ["city_encoded", "state_encoded", "locale_encoded"]:
+                        "month", "day", "dow", "is_weekend", "lag_7", "lag_14",
+                        "dcoilwtico", "transactions"]
+        for col in ["city_encoded", "state_encoded", "locale_encoded", "type_x_encoded", "type_y_encoded"]:
             if col in train.columns:
                 feature_cols.append(col)
 
@@ -222,8 +244,8 @@ with training_tab:
     test_file = st.file_uploader("Upload Test CSV", type="csv", key="uploader_test")
 
     # Column selection
-    date_column = None
-    target_column = None
+    date_column = st.session_state.date_column
+    target_column = st.session_state.target_column
     if train_file and test_file:
         try:
             train_df = pd.read_csv(train_file, nrows=1)
@@ -235,6 +257,7 @@ with training_tab:
             target_column = st.selectbox("Select Target Column (Numeric)", columns,
                                        index=columns.index("sales") if "sales" in columns else 0,
                                        key="target_column_select")
+            # Update session state immediately
             st.session_state.date_column = date_column
             st.session_state.target_column = target_column
         except Exception as e:
@@ -245,9 +268,13 @@ with training_tab:
     selected_model = st.selectbox("Select Model to Train", MODELS, key="train_model_select")
     train_button = st.button("Generate Predictions")
 
-    if train_button and train_file and test_file and selected_model and date_column and target_column:
+    if train_button and train_file and test_file and selected_model:
         with st.spinner("Processing data..."):
-            result = load_and_process_data(train_file, test_file, date_column, target_column)
+            st.write(f"Using Date Column: {st.session_state.date_column}")
+            st.write(f"Using Target Column: {st.session_state.target_column}")
+            result = load_and_process_data(train_file, test_file, 
+                                         date_col=st.session_state.date_column, 
+                                         target_col=st.session_state.target_column)
             if result[0] is None:
                 st.stop()
             train, test, feature_cols, scaler, le_store, le_family = result
@@ -269,7 +296,10 @@ with training_tab:
             )
 
             with st.spinner(f"Training {selected_model}..."):
-                predictions = train_and_predict(train, test, feature_cols, date_column, target_column, selected_model)
+                predictions = train_and_predict(train, test, feature_cols, 
+                                              st.session_state.date_column, 
+                                              st.session_state.target_column, 
+                                              selected_model)
                 if predictions is None:
                     st.stop()
                 st.session_state.predictions[selected_model] = predictions
@@ -277,14 +307,16 @@ with training_tab:
                 # Plot predictions (first 100 points)
                 fig = go.Figure()
                 if "actual" in predictions.columns:
-                    fig.add_trace(go.Scatter(x=predictions[date_column][:100], y=predictions["actual"][:100], 
+                    fig.add_trace(go.Scatter(x=predictions[st.session_state.date_column][:100], 
+                                           y=predictions["actual"][:100], 
                                            mode="lines", name="Actual", line=dict(color="blue")))
-                fig.add_trace(go.Scatter(x=predictions[date_column][:100], y=predictions[target_column][:100], 
+                fig.add_trace(go.Scatter(x=predictions[st.session_state.date_column][:100], 
+                                       y=predictions[st.session_state.target_column][:100], 
                                        mode="lines", name="Predicted", line=dict(color="orange")))
                 fig.update_layout(
                     title=f"{selected_model} Predictions",
                     xaxis_title="Date",
-                    yaxis_title=target_column,
+                    yaxis_title=st.session_state.target_column,
                     xaxis_tickangle=45,
                     yaxis_gridcolor="lightgray"
                 )
@@ -293,7 +325,7 @@ with training_tab:
                 # Calculate and display metrics
                 if "actual" in predictions.columns:
                     actuals = predictions["actual"].values
-                    preds = predictions[target_column].values
+                    preds = predictions[st.session_state.target_column].values
                     rmsle = np.sqrt(mean_squared_error(np.log1p(actuals), np.log1p(preds)))
                     rmse = np.sqrt(mean_squared_error(actuals, preds))
                     mae = mean_absolute_error(actuals, preds)
