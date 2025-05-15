@@ -1,95 +1,109 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
-from sklearn.model_selection import train_test_split
-from sklearn.ensemble import RandomForestRegressor
-from sklearn.metrics import mean_absolute_error, mean_squared_error
 import matplotlib.pyplot as plt
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import mean_absolute_error
 from datetime import timedelta
 
-st.set_page_config(page_title="Sales Forecasting", layout="wide")
+st.set_page_config(page_title="Sales Forecasting App", layout="wide")
 
-# Sidebar
-st.sidebar.title("Navigation")
-tab = st.sidebar.radio("Go to", ["Training", "Testing", "Future Forecast"])
+# Sidebar upload
+st.sidebar.header("Upload Data")
+train_file = st.sidebar.file_uploader("Upload Training Data", type=["csv"], key="train")
+test_file = st.sidebar.file_uploader("Upload Testing Data", type=["csv"], key="test")
 
+# Load data
 @st.cache_data
-def load_data():
-    df = pd.read_csv("sales_data.csv", parse_dates=['Date'])
-    df.sort_values("Date", inplace=True)
+def load_csv(file):
+    df = pd.read_csv(file, parse_dates=['Date'])
+    df = df.sort_values('Date')
     return df
 
-data = load_data()
-
-# Common preprocessing
-data['Day'] = data['Date'].dt.day
-data['Month'] = data['Date'].dt.month
-data['Year'] = data['Date'].dt.year
-features = ['Day', 'Month', 'Year']
-X = data[features]
-y = data['Sales']
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-
-model = RandomForestRegressor(n_estimators=100, random_state=42)
-model.fit(X_train, y_train)
+train_data = load_csv(train_file) if train_file else None
+test_data = load_csv(test_file) if test_file else None
 
 # Tabs
-if tab == "Training":
-    st.title("Model Training")
+tab1, tab2, tab3 = st.tabs(["Training", "Testing", "Future Forecast"])
 
-    st.write("### Data Preview")
-    st.dataframe(data.head())
+# --- Training Tab ---
+with tab1:
+    st.header("Model Training")
 
-    st.write("### Feature Importance")
-    importance = pd.Series(model.feature_importances_, index=features)
-    fig, ax = plt.subplots()
-    importance.plot(kind='barh', ax=ax)
-    st.pyplot(fig)
+    if train_data is not None:
+        st.subheader("Training Data")
+        st.dataframe(train_data.head())
 
-    st.write("### Training Metrics")
-    y_pred_train = model.predict(X_train)
-    st.write(f"MAE: {mean_absolute_error(y_train, y_pred_train):.2f}")
-    st.write(f"MSE: {mean_squared_error(y_train, y_pred_train):.2f}")
+        # Convert to numeric time for regression
+        train_data['Time'] = (train_data['Date'] - train_data['Date'].min()).dt.days
+        X_train = train_data[['Time']]
+        y_train = train_data['Sales']
 
-elif tab == "Testing":
-    st.title("Model Testing")
+        model = LinearRegression()
+        model.fit(X_train, y_train)
 
-    st.write("### Test Metrics")
-    y_pred_test = model.predict(X_test)
-    st.write(f"MAE: {mean_absolute_error(y_test, y_pred_test):.2f}")
-    st.write(f"MSE: {mean_squared_error(y_test, y_pred_test):.2f}")
+        # Plot
+        st.subheader("Model Fit")
+        plt.figure(figsize=(10, 4))
+        plt.plot(train_data['Date'], y_train, label="Actual Sales")
+        plt.plot(train_data['Date'], model.predict(X_train), label="Predicted Sales")
+        plt.legend()
+        st.pyplot(plt)
 
-    st.write("### Predictions vs Actual")
-    result_df = pd.DataFrame({
-        'Date': data.loc[y_test.index, 'Date'],
-        'Actual': y_test.values,
-        'Predicted': y_pred_test
-    })
-    result_df.set_index('Date', inplace=True)
-    st.line_chart(result_df)
+        st.success("Model trained successfully.")
+    else:
+        st.warning("Upload training data to train the model.")
 
-elif tab == "Future Forecast":
-    st.title("Future Forecast")
+# --- Testing Tab ---
+with tab2:
+    st.header("Model Testing")
 
-    st.write("### Forecast Settings")
-    start_date = data['Date'].max() + timedelta(days=1)
-    forecast_days = st.slider("Select number of days to forecast", 1, 60, 30)
+    if test_data is not None and train_data is not None:
+        st.subheader("Testing Data")
+        st.dataframe(test_data.head())
 
-    future_dates = pd.date_range(start=start_date, periods=forecast_days)
-    future_df = pd.DataFrame({
-        'Date': future_dates,
-        'Day': future_dates.day,
-        'Month': future_dates.month,
-        'Year': future_dates.year
-    })
+        # Use the same time reference
+        test_data['Time'] = (test_data['Date'] - train_data['Date'].min()).dt.days
+        X_test = test_data[['Time']]
+        y_test = test_data['Sales']
 
-    future_pred = model.predict(future_df[['Day', 'Month', 'Year']])
-    forecast_result = pd.DataFrame({
-        'Date': future_dates,
-        'Forecasted Sales': future_pred
-    })
-    forecast_result.set_index('Date', inplace=True)
+        y_pred = model.predict(X_test)
 
-    st.line_chart(forecast_result)
-    st.write("### Forecast Data")
-    st.dataframe(forecast_result.reset_index())
+        # Plot
+        st.subheader("Predictions vs Actual")
+        plt.figure(figsize=(10, 4))
+        plt.plot(test_data['Date'], y_test, label="Actual")
+        plt.plot(test_data['Date'], y_pred, label="Predicted")
+        plt.legend()
+        st.pyplot(plt)
+
+        mae = mean_absolute_error(y_test, y_pred)
+        st.metric("Mean Absolute Error", f"{mae:.2f}")
+    else:
+        st.warning("Upload both training and testing data.")
+
+# --- Future Forecast Tab ---
+with tab3:
+    st.header("Future Forecast")
+
+    if train_data is not None:
+        forecast_days = st.number_input("Days to Forecast", min_value=1, max_value=365, value=30)
+
+        last_date = train_data['Date'].max()
+        last_time = (last_date - train_data['Date'].min()).days
+
+        future_times = list(range(last_time + 1, last_time + 1 + forecast_days))
+        future_dates = [last_date + timedelta(days=i) for i in range(1, forecast_days + 1)]
+        future_preds = model.predict(pd.DataFrame({'Time': future_times}))
+
+        forecast_df = pd.DataFrame({'Date': future_dates, 'Predicted Sales': future_preds})
+        st.subheader("Forecast Results")
+        st.dataframe(forecast_df)
+
+        # Plot
+        st.subheader("Forecast Plot")
+        plt.figure(figsize=(10, 4))
+        plt.plot(forecast_df['Date'], forecast_df['Predicted Sales'], label="Forecast", color='green')
+        plt.legend()
+        st.pyplot(plt)
+    else:
+        st.warning("Train the model first.")
