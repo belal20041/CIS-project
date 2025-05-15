@@ -137,9 +137,14 @@ with training_tab:
                     ('%d/%m/%Y', 'DD/MM/YYYY'),
                     ('%m-%d-%Y', 'MM-DD-YYYY'),
                     ('%Y/%m/%d', 'YYYY/MM/DD'),
+                    ('%m/%d/%Y', 'MM/DD/YYYY'),
+                    ('%d-%b-%Y', 'DD-MMM-YYYY'),
                     ('%Y-%m-%d %H:%M:%S', 'YYYY-MM-DD HH:MM:SS'),
                     ('%d-%m-%Y %H:%M:%S', 'DD-MM-YYYY HH:MM:SS'),
-                    ('%d/%m/%Y %H:%M:%S', 'DD/MM/YYYY HH:MM:SS')
+                    ('%d/%m/%Y %H:%M:%S', 'DD/MM/YYYY HH:MM:SS'),
+                    ('%m-%d-%Y %H:%M:%S', 'MM-DD-YYYY HH:MM:SS'),
+                    ('%m/%d/%Y %H:%M:%S', 'MM/DD/YYYY HH:MM:SS'),
+                    ('%d-%b-%Y %H:%M:%S', 'DD-MMM-YYYY HH:MM:SS')
                 ]
                 
                 # Parse train dates
@@ -152,7 +157,7 @@ with training_tab:
                         train[date_col] = pd.to_datetime(train[date_col])
                         break
                 if not train_date_parsed:
-                    st.error(f"Invalid date formats in train.csv column '{date_col}'. Tried YYYY-MM-DD, DD-MM-YYYY, DD/MM/YYYY, MM-DD-YYYY, YYYY/MM/DD, YYYY-MM-DD HH:MM:SS, DD-MM-YYYY HH:MM:SS, DD/MM/YYYY HH:MM:SS.")
+                    st.error(f"Invalid date formats in train.csv column '{date_col}'. Tried YYYY-MM-DD, DD-MM-YYYY, DD/MM/YYYY, MM-DD-YYYY, YYYY/MM/DD, MM/DD/YYYY, DD-MMM-YYYY, YYYY-MM-DD HH:MM:SS, DD-MM-YYYY HH:MM:SS, DD/MM/YYYY HH:MM:SS, MM-DD-YYYY HH:MM:SS, MM/DD/YYYY HH:MM:SS, DD-MMM-YYYY HH:MM:SS.")
                     return None, None, None, None, None, None, None
                 
                 # Parse test dates
@@ -165,7 +170,7 @@ with training_tab:
                         test[date_col] = pd.to_datetime(test[date_col])
                         break
                 if not test_date_parsed:
-                    st.error(f"Invalid date formats in test.csv column '{date_col}'. Tried YYYY-MM-DD, DD-MM-YYYY, DD/MM/YYYY, MM-DD-YYYY, YYYY/MM/DD, YYYY-MM-DD HH:MM:SS, DD-MM-YYYY HH:MM:SS, DD/MM/YYYY HH:MM:SS.")
+                    st.error(f"Invalid date formats in test.csv column '{date_col}'. Tried YYYY-MM-DD, DD-MM-YYYY, DD/MM/YYYY, MM-DD-YYYY, YYYY/MM/DD, MM/DD/YYYY, DD-MMM-YYYY, YYYY-MM-DD HH:MM:SS, DD-MM-YYYY HH:MM:SS, DD/MM/YYYY HH:MM:SS, MM-DD-YYYY HH:MM:SS, MM/DD/YYYY HH:MM:SS, DD-MMM-YYYY HH:MM:SS.")
                     return None, None, None, None, None, None, None
                 
                 # Combine train and test
@@ -236,13 +241,15 @@ with training_tab:
                 scaler = StandardScaler()
                 combined[feature_cols] = scaler.fit_transform(combined[feature_cols]).astype('float32')
                 
+                return combined, feature_cols, scaler, le_store, le_family
+            
+            def split_data(combined, date_col, target_col):
                 # Split into train, validation, test
                 train = combined[combined['is_train'] == 1]
                 test = combined[combined['is_train'] == 0].drop([target_col], axis=1)
                 train_set = train[train[date_col] <= TRAIN_END]
                 val_set = train[(train[date_col] > TRAIN_END) & (train[date_col] <= VAL_END)]
-                
-                return train_set, val_set, test, feature_cols, scaler, le_store, le_family
+                return train_set, val_set, test
             
             def clipped_mape(y_true, y_pred):
                 y_true, y_pred = np.array(y_true), np.array(y_pred)
@@ -253,7 +260,15 @@ with training_tab:
             result = load_and_process_data(train_file, test_file, st.session_state.date_column, st.session_state.target_column)
             if result[0] is None:  # Check if validation failed
                 st.stop()
-            train_set, val_set, test, feature_cols, scaler, le_store, le_family = result
+            combined, feature_cols, scaler, le_store, le_family = result
+            
+            # Display processed data table
+            st.subheader("Processed Data Preview")
+            st.write("Below is a preview of the processed data before model training. Check the 'date' column for correct formatting and other features for validity.")
+            st.dataframe(combined.head(100))  # Show first 100 rows for inspection
+            
+            # Split data
+            train_set, val_set, test = split_data(combined, st.session_state.date_column, st.session_state.target_column)
             
             # Store in session state
             st.session_state.train_set = train_set
