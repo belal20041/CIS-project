@@ -156,6 +156,46 @@ def plot_sales_by_month(df, date_col, target_col):
     fig.update_layout(xaxis_tickmode='linear', yaxis_gridcolor='lightgray')
     return fig
 
+def plot_correlation_heatmap(df, target_col):
+    numeric_df = df.select_dtypes(include=['number']).corr()
+    fig = go.Figure(data=go.Heatmap(
+        z=numeric_df.values,
+        x=numeric_df.columns,
+        y=numeric_df.columns,
+        colorscale='coolwarm',
+        text=numeric_df.round(2).values,
+        texttemplate="%{text}",
+        textfont={"size": 10}
+    ))
+    fig.update_layout(title="Correlation Heatmap", xaxis_title="Variables", yaxis_title="Variables", yaxis_gridcolor='lightgray')
+    return fig
+
+def plot_acf(df, date_col, target_col):
+    series = df[(df['store_nbr'] == 1) & (df['family'] == 'GROCERY I')].sort_values(date_col).set_index(date_col)[target_col].dropna()
+    n_lags = 28
+    acf_vals, acf_confint = acf(series, nlags=n_lags, alpha=0.05, fft=False)
+    lags = range(len(acf_vals))
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=lags, y=acf_vals, mode='markers+lines', name='ACF'))
+    fig.add_trace(go.Scatter(x=lags*2, y=acf_confint[:, 0], fill='tonexty', mode='none', name='Confidence Interval', fillcolor='rgba(0,100,80,0.2)'))
+    fig.add_trace(go.Scatter(x=lags*2, y=acf_confint[:, 1], fill='tonexty', mode='none', name='Confidence Interval', fillcolor='rgba(0,100,80,0.2)'))
+    fig.add_hline(y=0, line=dict(color="black", dash="dash"))
+    fig.update_layout(title='ACF for Store 1, Family GROCERY I', xaxis_title='Lag', yaxis_title='Autocorrelation', yaxis_gridcolor='lightgray')
+    return fig
+
+def plot_pacf(df, date_col, target_col):
+    series = df[(df['store_nbr'] == 1) & (df['family'] == 'GROCERY I')].sort_values(date_col).set_index(date_col)[target_col].dropna()
+    n_lags = 28
+    pacf_vals, pacf_confint = pacf(series, nlags=n_lags, alpha=0.05)
+    lags = range(len(pacf_vals))
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=lags, y=pacf_vals, mode='markers+lines', name='PACF'))
+    fig.add_trace(go.Scatter(x=lags*2, y=pacf_confint[:, 0], fill='tonexty', mode='none', name='Confidence Interval', fillcolor='rgba(0,100,80,0.2)'))
+    fig.add_trace(go.Scatter(x=lags*2, y=pacf_confint[:, 1], fill='tonexty', mode='none', name='Confidence Interval', fillcolor='rgba(0,100,80,0.2)'))
+    fig.add_hline(y=0, line=dict(color="black", dash="dash"))
+    fig.update_layout(title='PACF for Store 1, Family GROCERY I', xaxis_title='Lag', yaxis_title='Partial Autocorrelation', yaxis_gridcolor='lightgray')
+    return fig
+
 def main():
     train_tab, test_tab = st.tabs(["Train", "Test"])
 
@@ -195,6 +235,9 @@ def main():
                     fig9 = plot_lag_plot(train, st.session_state['train_date'], st.session_state['train_target'])
                     fig10 = plot_sales_by_dow(train, st.session_state['train_date'], st.session_state['train_target'])
                     fig11 = plot_sales_by_month(train, st.session_state['train_date'], st.session_state['train_target'])
+                    fig12 = plot_correlation_heatmap(train, st.session_state['train_target'])
+                    fig13 = plot_acf(train, st.session_state['train_date'], st.session_state['train_target'])
+                    fig14 = plot_pacf(train, st.session_state['train_date'], st.session_state['train_target'])
 
                     st.plotly_chart(fig1)
                     st.plotly_chart(fig2)
@@ -208,6 +251,9 @@ def main():
                     st.plotly_chart(fig9)
                     st.plotly_chart(fig10)
                     st.plotly_chart(fig11)
+                    st.plotly_chart(fig12)
+                    st.plotly_chart(fig13)
+                    st.plotly_chart(fig14)
 
                     data = get_download_file(train, "train_data.csv")
                     st.download_button("Download Train Data", data[0], "train_data.csv", data[1])
