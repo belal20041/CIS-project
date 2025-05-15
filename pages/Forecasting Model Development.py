@@ -11,8 +11,6 @@ from sklearn.linear_model import LinearRegression
 import joblib
 import psutil
 from datetime import datetime
-import warnings
-warnings.filterwarnings("ignore")
 
 # Streamlit app title
 st.title("Sales Forecasting Dashboard")
@@ -41,65 +39,61 @@ VAL_END = '2017-08-15'
 # Cache data loading and processing
 @st.cache_data
 def load_and_process_data(train_file, test_file, sub_file):
-    try:
-        # Load data
-        train = pd.read_csv(train_file)
-        test = pd.read_csv(test_file)
-        sub = pd.read_csv(sub_file)
-        
-        # Data preprocessing
-        train['date'] = pd.to_datetime(train['date'])
-        test['date'] = pd.to_datetime(test['date'], format='%d-%m-%Y')
-        train[['store_nbr', 'onpromotion']] = train[['store_nbr', 'onpromotion']].astype('int32')
-        test[['store_nbr', 'onpromotion']] = test[['store_nbr', 'onpromotion']].astype('int32')
-        train['sales'] = train['sales'].astype('float32')
-        train.dropna(subset=['date'], inplace=True)
-        test.dropna(subset=['date'], inplace=True)
-        
-        # Prepare data
-        train['is_train'] = 1
-        test['is_train'] = 0
-        combined = pd.concat([train, test]).sort_values(['store_nbr', 'family', 'date'])
-        agg_dict = {'sales': 'mean', 'onpromotion': 'sum', 'is_train': 'first', 'id': 'first'}
-        combined = combined.groupby(['store_nbr', 'family', 'date']).agg(agg_dict).reset_index()
-        combined = combined.astype({'store_nbr': 'int32', 'family': 'category', 'date': 'datetime64[ns]', 
-                                   'sales': 'float32', 'onpromotion': 'int32', 'is_train': 'int8'})
-        
-        # Handle missing values
-        grouped = combined.groupby(['store_nbr', 'family'])
-        processed_groups = []
-        for (store_nbr, family), group in grouped:
-            group['sales'] = group['sales'].ffill().fillna(0).astype('float32')
-            group['onpromotion'] = group['onpromotion'].fillna(0).astype('int32')
-            processed_groups.append(group)
-        combined = pd.concat(processed_groups)
-        
-        # Add features
-        combined['day'] = combined['date'].dt.day.astype('int8')
-        combined['dow'] = combined['date'].dt.dayofweek.astype('int8')
-        combined['month'] = combined['date'].dt.month.astype('int8')
-        combined['year'] = combined['date'].dt.year.astype('int16')
-        combined['sin_month'] = np.sin(2 * np.pi * combined['month'] / 12).astype('float32')
-        lags = [7, 14]
-        for lag in lags:
-            combined[f'lag_{lag}'] = combined.groupby(['store_nbr', 'family'])['sales'].shift(lag).astype('float32')
-        combined['roll_mean_7'] = combined.groupby(['store_nbr', 'family'])['sales'].shift(1).rolling(7, min_periods=1).mean().astype('float32')
-        combined['store_nbr_encoded'] = LabelEncoder().fit_transform(combined['store_nbr']).astype('int8')
-        combined['family_encoded'] = LabelEncoder().fit_transform(combined['family']).astype('int8')
-        feature_cols = ['onpromotion', 'day', 'dow', 'month', 'year', 'sin_month', 'store_nbr_encoded', 
-                        'family_encoded', 'lag_7', 'lag_14', 'roll_mean_7']
-        combined[feature_cols] = StandardScaler().fit_transform(combined[feature_cols].fillna(0)).astype('float32')
-        
-        # Split data
-        train = combined[combined['is_train'] == 1]
-        test = combined[combined['is_train'] == 0].drop(['sales'], axis=1)
-        train_set = train[train['date'] <= TRAIN_END]
-        val_set = train[(train['date'] > TRAIN_END) & (train['date'] <= VAL_END)]
-        
-        return train_set, val_set, test, sub, feature_cols
-    except Exception as e:
-        st.error(f"Error processing files: {str(e)}")
-        return None, None, None, None, None
+    # Load data
+    train = pd.read_csv(train_file)
+    test = pd.read_csv(test_file)
+    sub = pd.read_csv(sub_file)
+    
+    # Data preprocessing
+    train['date'] = pd.to_datetime(train['date'])
+    test['date'] = pd.to_datetime(test['date'], format='%d-%m-%Y')
+    train[['store_nbr', 'onpromotion']] = train[['store_nbr', 'onpromotion']].astype('int32')
+    test[['store_nbr', 'onpromotion']] = test[['store_nbr', 'onpromotion']].astype('int32')
+    train['sales'] = train['sales'].astype('float32')
+    train.dropna(subset=['date'], inplace=True)
+    test.dropna(subset=['date'], inplace=True)
+    
+    # Prepare data
+    train['is_train'] = 1
+    test['is_train'] = 0
+    combined = pd.concat([train, test]).sort_values(['store_nbr', 'family', 'date'])
+    agg_dict = {'sales': 'mean', 'onpromotion': 'sum', 'is_train': 'first', 'id': 'first'}
+    combined = combined.groupby(['store_nbr', 'family', 'date']).agg(agg_dict).reset_index()
+    combined = combined.astype({'store_nbr': 'int32', 'family': 'category', 'date': 'datetime64[ns]', 
+                               'sales': 'float32', 'onpromotion': 'int32', 'is_train': 'int8'})
+    
+    # Handle missing values
+    grouped = combined.groupby(['store_nbr', 'family'])
+    processed_groups = []
+    for (store_nbr, family), group in grouped:
+        group['sales'] = group['sales'].ffill().fillna(0).astype('float32')
+        group['onpromotion'] = group['onpromotion'].fillna(0).astype('int32')
+        processed_groups.append(group)
+    combined = pd.concat(processed_groups)
+    
+    # Add features
+    combined['day'] = combined['date'].dt.day.astype('int8')
+    combined['dow'] = combined['date'].dt.dayofweek.astype('int8')
+    combined['month'] = combined['date'].dt.month.astype('int8')
+    combined['year'] = combined['date'].dt.year.astype('int16')
+    combined['sin_month'] = np.sin(2 * np.pi * combined['month'] / 12).astype('float32')
+    lags = [7, 14]
+    for lag in lags:
+        combined[f'lag_{lag}'] = combined.groupby(['store_nbr', 'family'])['sales'].shift(lag).astype('float32')
+    combined['roll_mean_7'] = combined.groupby(['store_nbr', 'family'])['sales'].shift(1).rolling(7, min_periods=1).mean().astype('float32')
+    combined['store_nbr_encoded'] = LabelEncoder().fit_transform(combined['store_nbr']).astype('int8')
+    combined['family_encoded'] = LabelEncoder().fit_transform(combined['family']).astype('int8')
+    feature_cols = ['onpromotion', 'day', 'dow', 'month', 'year', 'sin_month', 'store_nbr_encoded', 
+                    'family_encoded', 'lag_7', 'lag_14', 'roll_mean_7']
+    combined[feature_cols] = StandardScaler().fit_transform(combined[feature_cols].fillna(0)).astype('float32')
+    
+    # Split data
+    train = combined[combined['is_train'] == 1]
+    test = combined[combined['is_train'] == 0].drop(['sales'], axis=1)
+    train_set = train[train['date'] <= TRAIN_END]
+    val_set = train[(train['date'] > TRAIN_END) & (train['date'] <= VAL_END)]
+    
+    return train_set, val_set, test, sub, feature_cols
 
 # Training Tab
 with training_tab:
@@ -124,99 +118,97 @@ with training_tab:
         with st.spinner("Processing data..."):
             # Load and process data
             train_set, val_set, test, sub, feature_cols = load_and_process_data(train_file, test_file, sub_file)
-            if train_set is None:
-                st.error("Failed to process data. Please check the file format and try again.")
-            else:
-                st.session_state.train_set = train_set
-                st.session_state.val_set = val_set
-                st.session_state.test = test
-                st.session_state.sub = sub
-                st.session_state.feature_cols = feature_cols
+            st.session_state.train_set = train_set
+            st.session_state.val_set = val_set
+            st.session_state.test = test
+            st.session_state.sub = sub
+            st.session_state.feature_cols = feature_cols
+            
+            # Prediction generation
+            for model_name in selected_models:
+                st.write(f"Generating predictions for {model_name}...")
+                temp_dir = tempfile.gettempdir()
+                val_dates = pd.date_range('2017-07-16', '2017-08-15')
+                val_steps = len(val_dates)
+                pred_dict = {}
+                actuals = []
+                preds = []
                 
-                # Prediction generation
-                for model_name in selected_models:
-                    st.write(f"Generating predictions for {model_name}...")
-                    temp_dir = tempfile.gettempdir()
-                    val_dates = pd.date_range('2017-07-16', '2017-08-15')
-                    val_steps = len(val_dates)
-                    pred_dict = {}
-                    actuals = []
-                    preds = []
+                if model_name in ["Naive", "Seasonal Naive", "Moving Average"]:
+                    for (store, family), group in val_set.groupby(['store_nbr', 'family']):
+                        train_group = train_set[(train_set['store_nbr'] == store) & (train_set['family'] == family)]
+                        group_sales = group['sales'].values
+                        if model_name == "Naive":
+                            pred = np.full(len(group_sales), train_group['sales'].iloc[-1])
+                        elif model_name == "Seasonal Naive":
+                            last_season = train_group['sales'].tail(7).values
+                            pred = np.tile(last_season, (len(group_sales) // 7) + 1)[:len(group_sales)]
+                        elif model_name == "Moving Average":
+                            pred = np.full(len(group_sales), train_group['sales'].tail(7).mean())
+                        pred_dict[(store, family)] = pred.tolist()
+                        actuals.extend(group_sales)
+                        preds.extend(pred)
+                
+                elif model_name == "Linear Regression":
+                    X_train = train_set[feature_cols]
+                    y_train = train_set['sales']
+                    X_val = val_set[feature_cols]
+                    y_val = val_set['sales']
+                    model = LinearRegression()
+                    model.fit(X_train, y_train)
+                    y_pred = model.predict(X_val)
+                    actuals = y_val.values
+                    preds = y_pred
+                    for (store, family), group in val_set.groupby(['store_nbr', 'family']):
+                        mask = val_set.index.isin(group.index)
+                        pred_dict[(store, family)] = y_pred[mask].tolist()
                     
-                    if model_name in ["Naive", "Seasonal Naive", "Moving Average"]:
-                        for (store, family), group in train_set.groupby(['store_nbr', 'family']):
-                            if model_name == "Naive":
-                                pred = np.full(val_steps, group['sales'].iloc[-1])
-                            elif model_name == "Seasonal Naive":
-                                last_season = group['sales'].tail(7).values
-                                pred = np.tile(last_season, (val_steps // 7) + 1)[:val_steps]
-                            elif model_name == "Moving Average":
-                                pred = np.full(val_steps, group['sales'].tail(7).mean())
-                            pred_dict[(store, family)] = pred.tolist()
-                        for (store, family), group in val_set.groupby(['store_nbr', 'family']):
-                            actuals.extend(group['sales'].values)
-                            preds.extend(pred_dict[(store, family)])
-                    
-                    elif model_name == "Linear Regression":
-                        X_train = train_set[feature_cols]
-                        y_train = train_set['sales']
-                        X_val = val_set[feature_cols]
-                        y_val = val_set['sales']
-                        model = LinearRegression()
-                        model.fit(X_train, y_train)
-                        y_pred = model.predict(X_val)
-                        actuals = y_val.values
-                        preds = y_pred
-                        for (store, family), group in val_set.groupby(['store_nbr', 'family']):
-                            mask = val_set.index.isin(group.index)
-                            pred_dict[(store, family)] = y_pred[mask].tolist()
-                        
-                        # Save model weights as model.pt
-                        model_path = os.path.join(temp_dir, "model.pt")
-                        joblib.dump(model, model_path)
-                        st.session_state.model_results[model_name] = {
-                            'metrics': None,
-                            'plot_path': None,
-                            'y_val': actuals,
-                            'y_pred': pred_dict,
-                            'model_path': model_path
-                        }
-                    
-                    # Compute metrics
-                    actual = np.clip(actuals, 0, None)
-                    predicted = np.clip(preds, 0, None)
-                    metrics = {
-                        'rmsle': np.sqrt(mean_squared_error(np.log1p(actual), np.log1p(predicted))),
-                        'rmse': np.sqrt(mean_squared_error(actual, predicted)),
-                        'mae': mean_absolute_error(actual, predicted),
-                        'mape': mean_absolute_percentage_error(actual + 1e-10, predicted + 1e-10)
+                    # Save model weights as model.pt
+                    model_path = os.path.join(temp_dir, "model.pt")
+                    joblib.dump(model, model_path)
+                    st.session_state.model_results[model_name] = {
+                        'metrics': None,
+                        'plot_path': None,
+                        'y_val': actuals,
+                        'y_pred': pred_dict,
+                        'model_path': model_path
                     }
-                    
-                    # Plot
-                    plt.figure(figsize=(10, 5))
-                    plt.plot(actuals[:100], label='Actual')
-                    plt.plot(preds[:100], label='Predicted')
-                    plt.title(f"{model_name} Predictions")
-                    plt.legend()
-                    plot_path = os.path.join(temp_dir, f"{model_name.lower()}_pred.png")
-                    plt.savefig(plot_path)
-                    plt.close()
-                    
-                    # Update results
-                    st.session_state.model_results[model_name]['metrics'] = metrics
-                    st.session_state.model_results[model_name]['plot_path'] = plot_path
-                    
-                    # Display metrics
-                    st.write(f"### {model_name} Metrics")
-                    col1, col2, col3, col4 = st.columns(4)
-                    col1.metric("RMSLE", f"{metrics['rmsle']:.4f}")
-                    col2.metric("RMSE", f"{metrics['rmse']:.4f}")
-                    col3.metric("MAE", f"{metrics['mae']:.4f}")
-                    col4.metric("MAPE", f"{metrics['mape']:.4f}")
                 
-                mem = psutil.Process(os.getpid()).memory_info().rss / 1024**2
-                st.metric("Memory Usage (MB)", f"{mem:.2f}")
-                st.success("Predictions generated!")
+                # Compute metrics
+                actual = np.clip(actuals, 0, None)
+                predicted = np.clip(preds, 0, None)
+                metrics = {
+                    'rmsle': np.sqrt(mean_squared_error(np.log1p(actual), np.log1p(predicted))),
+                    'rmse': np.sqrt(mean_squared_error(actual, predicted)),
+                    'mae': mean_absolute_error(actual, predicted),
+                    'mape': mean_absolute_percentage_error(actual + 1e-10, predicted + 1e-10)
+                }
+                
+                # Plot
+                plt.figure(figsize=(10, 5))
+                plt.plot(actuals[:100], label='Actual')
+                plt.plot(preds[:100], label='Predicted')
+                plt.title(f"{model_name} Predictions")
+                plt.legend()
+                plot_path = os.path.join(temp_dir, f"{model_name.lower()}_pred.png")
+                plt.savefig(plot_path)
+                plt.close()
+                
+                # Update results
+                st.session_state.model_results[model_name]['metrics'] = metrics
+                st.session_state.model_results[model_name]['plot_path'] = plot_path
+                
+                # Display metrics
+                st.write(f"### {model_name} Metrics")
+                col1, col2, col3, col4 = st.columns(4)
+                col1.metric("RMSLE", f"{metrics['rmsle']:.4f}")
+                col2.metric("RMSE", f"{metrics['rmse']:.4f}")
+                col3.metric("MAE", f"{metrics['mae']:.4f}")
+                col4.metric("MAPE", f"{metrics['mape']:.4f}")
+            
+            mem = psutil.Process(os.getpid()).memory_info().rss / 1024**2
+            st.metric("Memory Usage (MB)", f"{mem:.2f}")
+            st.success("Predictions generated!")
     elif train_button:
         st.error("Please upload all CSV files and select at least one model.")
 
@@ -357,16 +349,11 @@ with specific_prediction_tab:
                         result = st.session_state.model_results[model_name]
                         if model_name == "Linear Regression":
                             model_path = result.get('model_path')
-                            if model_path and os.path.exists(model_path):
-                                model = joblib.load(model_path)
-                                X_spec = spec_df[st.session_state.feature_cols]
-                                predictions = model.predict(X_spec)
-                                spec_df['predicted_sales'] = np.clip(predictions, 0, None)
-                            else:
-                                st.write(f"Model weights not found for {model_name}.")
-                                continue
+                            model = joblib.load(model_path)
+                            X_spec = spec_df[st.session_state.feature_cols]
+                            predictions = model.predict(X_spec)
+                            spec_df['predicted_sales'] = np.clip(predictions, 0, None)
                         else:
-                            # Placeholder for non-persistent models
                             spec_df['predicted_sales'] = np.full(len(spec_df), spec_df['sales'].mean())
                         
                         # Aggregate predictions based on granularity
@@ -389,9 +376,8 @@ with specific_prediction_tab:
                         plt.close()
                         
                         # Display plot
-                        if os.path.exists(plot_path):
-                            image = Image.open(plot_path)
-                            st.image(image, caption=f"{model_name} Prediction", use_column_width=True)
+                        image = Image.open(plot_path)
+                        st.image(image, caption=f"{model_name} Prediction", use_column_width=True)
                     else:
                         st.write(f"Model {model_name} not trained.")
     else:
@@ -467,16 +453,11 @@ with forecasting_tab:
                         result = st.session_state.model_results[model_name]
                         if model_name == "Linear Regression":
                             model_path = result.get('model_path')
-                            if model_path and os.path.exists(model_path):
-                                model = joblib.load(model_path)
-                                X_forecast = forecast_df[st.session_state.feature_cols]
-                                predictions = model.predict(X_forecast)
-                                forecast_df['predicted_sales'] = np.clip(predictions, 0, None)
-                            else:
-                                st.write(f"Model weights not found for {model_name}.")
-                                continue
+                            model = joblib.load(model_path)
+                            X_forecast = forecast_df[st.session_state.feature_cols]
+                            predictions = model.predict(X_forecast)
+                            forecast_df['predicted_sales'] = np.clip(predictions, 0, None)
                         else:
-                            # Placeholder for non-persistent models
                             forecast_df['predicted_sales'] = np.full(len(forecast_df), forecast_df['sales'].mean())
                         
                         # Aggregate forecasts based on granularity
@@ -499,9 +480,8 @@ with forecasting_tab:
                         plt.close()
                         
                         # Display plot
-                        if os.path.exists(plot_path):
-                            image = Image.open(plot_path)
-                            st.image(image, caption=f"{model_name} Forecast", use_column_width=True)
+                        image = Image.open(plot_path)
+                        st.image(image, caption=f"{model_name} Forecast", use_column_width=True)
                     else:
                         st.write(f"Model {model_name} not trained.")
     else:
