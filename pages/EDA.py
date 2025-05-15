@@ -335,7 +335,7 @@ def plot_periodogram(df, target_col, date_range=None):
     return fig
 
 @st.cache_data
-def plot_rolling_stats(df, date_col, target - target_col, date_range=None):
+def plot_rolling_stats(df, date_col, target_col, date_range=None):
     if date_range:
         start_date, end_date = date_range
         df = df[(df[date_col] >= start_date) & (df[date_col] <= end_date)]
