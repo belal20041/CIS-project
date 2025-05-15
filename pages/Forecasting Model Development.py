@@ -10,6 +10,7 @@ from sklearn.metrics import mean_squared_error, mean_absolute_error, mean_absolu
 from sklearn.linear_model import LinearRegression
 import joblib
 import psutil
+from datetime import datetime
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -31,7 +32,7 @@ if 'feature_cols' not in st.session_state:
     st.session_state.feature_cols = None
 
 # Tabs
-training_tab, prediction_tab = st.tabs(["Training", "Prediction"])
+training_tab, prediction_tab, specific_prediction_tab, forecasting_tab = st.tabs(["Training", "Prediction", "Specific Date Prediction", "Forecasting"])
 
 # Constants
 TRAIN_END = '2017-07-15'
@@ -170,11 +171,11 @@ with training_tab:
                             mask = val_set.index.isin(group.index)
                             pred_dict[(store, family)] = y_pred[mask].tolist()
                         
-                        # Save model weights
-                        model_path = os.path.join(temp_dir, f"linear_regression_model.joblib")
+                        # Save model weights as model.pt
+                        model_path = os.path.join(temp_dir, "model.pt")
                         joblib.dump(model, model_path)
                         st.session_state.model_results[model_name] = {
-                            'metrics': None,  # Updated below
+                            'metrics': None,
                             'plot_path': None,
                             'y_val': actuals,
                             'y_pred': pred_dict,
@@ -221,7 +222,7 @@ with training_tab:
 
 # Prediction Tab
 with prediction_tab:
-    st.header("Visualize Predictions and Forecast")
+    st.header("Visualize Predictions")
     
     if st.session_state.train_set is not None:
         # Get store numbers and families
@@ -230,9 +231,9 @@ with prediction_tab:
         
         # User inputs for visualization
         st.subheader("Visualize Predictions vs Actual")
-        store_nbr = st.selectbox("Select Store Number", store_nbrs)
-        family = st.selectbox("Select Product Family", families)
-        selected_models = st.multiselect("Select Models to Visualize", models, default=["Naive"])
+        store_nbr = st.selectbox("Select Store Number", store_nbrs, key="viz_store")
+        family = st.selectbox("Select Product Family", families, key="viz_family")
+        selected_models = st.multiselect("Select Models to Visualize", models, default=["Naive"], key="viz_models")
         
         if selected_models:
             for model_name in selected_models:
@@ -283,74 +284,213 @@ with prediction_tab:
                         st.write("No validation data for this store-family combination.")
                 else:
                     st.write("Model not trained. Please generate predictions in the Training tab.")
+    else:
+        st.write("Please upload data and generate predictions in the Training tab.")
+
+# Specific Date Prediction Tab
+with specific_prediction_tab:
+    st.header("Predict Sales for Specific Date")
+    
+    if st.session_state.train_set is not None:
+        # Get store numbers and families
+        store_nbrs = sorted(st.session_state.train_set['store_nbr'].unique())
+        families = sorted(st.session_state.train_set['family'].unique())
         
-        # Forecasting section
-        st.divider()
-        st.subheader("Forecast Future Sales")
-        forecast_days = st.number_input("Number of Days to Forecast", min_value=1, max_value=365, value=16)
-        forecast_button = st.button("Generate Forecast")
+        # User inputs
+        st.subheader("Specify Prediction Details")
+        store_nbr = st.selectbox("Select Store Number", store_nbrs, key="spec_store")
+        family = st.selectbox("Select Product Family", families, key="spec_family")
+        onpromotion = st.selectbox("On Promotion?", [0, 1], key="spec_promo")
+        time_granularity = st.selectbox("Select Time Granularity", ["Day", "Month", "Year"], key="spec_time")
         
-        if forecast_button:
-            with st.spinner("Generating forecast..."):
-                # Create future dates
-                last_date = st.session_state.test['date'].max()
-                future_dates = pd.date_range(start=last_date + pd.Timedelta(days=1), periods=forecast_days)
-                
-                # Prepare future data
-                future_data = []
-                for store_nbr in store_nbrs:
-                    for family in families:
-                        for date in future_dates:
-                            future_data.append({
-                                'store_nbr': store_nbr,
-                                'family': family,
-                                'date': date,
-                                'onpromotion': 0,
-                                'is_train': 0
-                            })
-                future_df = pd.DataFrame(future_data)
+        if time_granularity == "Day":
+            target_date = st.date_input("Select Date", min_value=datetime(2017, 8, 16), key="spec_date")
+            target_dates = [pd.to_datetime(target_date)]
+        elif time_granularity == "Month":
+            year = st.number_input("Select Year", min_value=2017, max_value=2030, value=2017, key="spec_year")
+            month = st.number_input("Select Month", min_value=1, max_value=12, value=8, key="spec_month")
+            target_dates = pd.date_range(start=f"{year}-{month:02d}-01", end=f"{year}-{month:02d}-28", freq='D')
+        else:  # Year
+            year = st.number_input("Select Year", min_value=2017, max_value=2030, value=2017, key="spec_year")
+            target_dates = pd.date_range(start=f"{year}-01-01", end=f"{year}-12-31", freq='D')
+        
+        predict_button = st.button("Predict Sales")
+        
+        if predict_button:
+            with st.spinner("Generating prediction..."):
+                # Prepare data for prediction
+                spec_data = []
+                for date in target_dates:
+                    spec_data.append({
+                        'store_nbr': store_nbr,
+                        'family': family,
+                        'date': date,
+                        'onpromotion': onpromotion,
+                        'is_train': 0
+                    })
+                spec_df = pd.DataFrame(spec_data)
                 
                 # Add features
-                future_df['day'] = future_df['date'].dt.day.astype('int8')
-                future_df['dow'] = future_df['date'].dt.dayofweek.astype('int8')
-                future_df['month'] = future_df['date'].dt.month.astype('int8')
-                future_df['year'] = future_df['date'].dt.year.astype('int16')
-                future_df['sin_month'] = np.sin(2 * np.pi * future_df['month'] / 12).astype('float32')
-                future_df['store_nbr_encoded'] = LabelEncoder().fit_transform(future_df['store_nbr']).astype('int8')
-                future_df['family_encoded'] = LabelEncoder().fit_transform(future_df['family']).astype('int8')
+                spec_df['day'] = spec_df['date'].dt.day.astype('int8')
+                spec_df['dow'] = spec_df['date'].dt.dayofweek.astype('int8')
+                spec_df['month'] = spec_df['date'].dt.month.astype('int8')
+                spec_df['year'] = spec_df['date'].dt.year.astype('int16')
+                spec_df['sin_month'] = np.sin(2 * np.pi * spec_df['month'] / 12).astype('float32')
+                spec_df['store_nbr_encoded'] = LabelEncoder().fit_transform(spec_df['store_nbr']).astype('int8')
+                spec_df['family_encoded'] = LabelEncoder().fit_transform(spec_df['family']).astype('int8')
                 
                 # Compute lags and rolling means
-                combined = pd.concat([st.session_state.train_set, st.session_state.test, future_df]).sort_values(['store_nbr', 'family', 'date'])
+                combined = pd.concat([st.session_state.train_set, st.session_state.test, spec_df]).sort_values(['store_nbr', 'family', 'date'])
                 for lag in [7, 14]:
                     combined[f'lag_{lag}'] = combined.groupby(['store_nbr', 'family'])['sales'].shift(lag).astype('float32')
                 combined['roll_mean_7'] = combined.groupby(['store_nbr', 'family'])['sales'].shift(1).rolling(7, min_periods=1).mean().astype('float32')
-                future_df = combined[combined['date'].isin(future_dates)]
+                spec_df = combined[combined['date'].isin(target_dates)]
                 
                 # Scale features
                 scaler = StandardScaler()
-                future_df[st.session_state.feature_cols] = scaler.fit_transform(future_df[st.session_state.feature_cols].fillna(0)).astype('float32')
+                spec_df[st.session_state.feature_cols] = scaler.fit_transform(spec_df[st.session_state.feature_cols].fillna(0)).astype('float32')
                 
-                # Generate forecasts
-                for model_name in selected_models:
+                # Generate predictions
+                for model_name in models:
                     if model_name in st.session_state.model_results:
+                        st.subheader(f"{model_name} Prediction")
                         result = st.session_state.model_results[model_name]
                         if model_name == "Linear Regression":
                             model_path = result.get('model_path')
                             if model_path and os.path.exists(model_path):
                                 model = joblib.load(model_path)
-                                X_future = future_df[st.session_state.feature_cols]
-                                predictions = model.predict(X_future)
-                                future_df['predicted_sales'] = np.clip(predictions, 0, None)
+                                X_spec = spec_df[st.session_state.feature_cols]
+                                predictions = model.predict(X_spec)
+                                spec_df['predicted_sales'] = np.clip(predictions, 0, None)
                             else:
                                 st.write(f"Model weights not found for {model_name}.")
+                                continue
                         else:
                             # Placeholder for non-persistent models
-                            future_df['predicted_sales'] = np.full(len(future_df), future_df['sales'].mean())
+                            spec_df['predicted_sales'] = np.full(len(spec_df), spec_df['sales'].mean())
                         
-                        # Plot forecast
+                        # Aggregate predictions based on granularity
+                        if time_granularity == "Day":
+                            predicted_sales = spec_df['predicted_sales'].iloc[0]
+                            st.write(f"Predicted Sales for {target_date}: **{predicted_sales:.2f}**")
+                        else:
+                            avg_sales = spec_df['predicted_sales'].mean()
+                            st.write(f"Average Predicted Sales for {time_granularity} ({year}-{month:02d} if Month): **{avg_sales:.2f}**")
+                        
+                        # Plot
                         plt.figure(figsize=(10, 5))
-                        plt.plot(future_df['date'], future_df['predicted_sales'], label=f'{model_name} Forecast')
-                        plt.title(f"{model_name} Sales Forecast for {forecast_days} Days")
+                        plt.plot(spec_df['date'], spec_df['predicted_sales'], label=f'{model_name} Prediction')
+                        plt.title(f"{model_name} Sales Prediction for Store {store_nbr}, Family {family}")
+                        plt.xlabel("Date")
+                        plt.ylabel("Predicted Sales")
+                        plt.legend()
+                        plot_path = os.path.join(tempfile.gettempdir(), f"{model_name.lower()}_spec_pred.png")
+                        plt.savefig(plot_path)
+                        plt.close()
+                        
+                        # Display plot
+                        if os.path.exists(plot_path):
+                            image = Image.open(plot_path)
+                            st.image(image, caption=f"{model_name} Prediction", use_column_width=True)
+                    else:
+                        st.write(f"Model {model_name} not trained.")
+    else:
+        st.write("Please upload data and generate predictions in the Training tab.")
+
+# Forecasting Tab
+with forecasting_tab:
+    st.header("Forecast Sales for Specific Period")
+    
+    if st.session_state.train_set is not None:
+        # Get store numbers and families
+        store_nbrs = sorted(st.session_state.train_set['store_nbr'].unique())
+        families = sorted(st.session_state.train_set['family'].unique())
+        
+        # User inputs
+        st.subheader("Specify Forecasting Details")
+        store_nbr = st.selectbox("Select Store Number", store_nbrs, key="forecast_store")
+        family = st.selectbox("Select Product Family", families, key="forecast_family")
+        onpromotion = st.selectbox("On Promotion?", [0, 1], key="forecast_promo")
+        time_granularity = st.selectbox("Select Time Granularity", ["Day", "Month", "Year"], key="forecast_time")
+        
+        if time_granularity == "Day":
+            target_date = st.date_input("Select Date", min_value=datetime(2017, 8, 16), key="forecast_date")
+            target_dates = [pd.to_datetime(target_date)]
+        elif time_granularity == "Month":
+            year = st.number_input("Select Year", min_value=2017, max_value=2030, value=2017, key="forecast_year")
+            month = st.number_input("Select Month", min_value=1, max_value=12, value=8, key="forecast_month")
+            target_dates = pd.date_range(start=f"{year}-{month:02d}-01", end=f"{year}-{month:02d}-28", freq='D')
+        else:  # Year
+            year = st.number_input("Select Year", min_value=2017, max_value=2030, value=2017, key="forecast_year")
+            target_dates = pd.date_range(start=f"{year}-01-01", end=f"{year}-12-31", freq='D')
+        
+        forecast_button = st.button("Generate Forecast")
+        
+        if forecast_button:
+            with st.spinner("Generating forecast..."):
+                # Prepare data for forecasting
+                forecast_data = []
+                for date in target_dates:
+                    forecast_data.append({
+                        'store_nbr': store_nbr,
+                        'family': family,
+                        'date': date,
+                        'onpromotion': onpromotion,
+                        'is_train': 0
+                    })
+                forecast_df = pd.DataFrame(forecast_data)
+                
+                # Add features
+                forecast_df['day'] = forecast_df['date'].dt.day.astype('int8')
+                forecast_df['dow'] = forecast_df['date'].dt.dayofweek.astype('int8')
+                forecast_df['month'] = forecast_df['date'].dt.month.astype('int8')
+                forecast_df['year'] = forecast_df['date'].dt.year.astype('int16')
+                forecast_df['sin_month'] = np.sin(2 * np.pi * forecast_df['month'] / 12).astype('float32')
+                forecast_df['store_nbr_encoded'] = LabelEncoder().fit_transform(forecast_df['store_nbr']).astype('int8')
+                forecast_df['family_encoded'] = LabelEncoder().fit_transform(forecast_df['family']).astype('int8')
+                
+                # Compute lags and rolling means
+                combined = pd.concat([st.session_state.train_set, st.session_state.test, forecast_df]).sort_values(['store_nbr', 'family', 'date'])
+                for lag in [7, 14]:
+                    combined[f'lag_{lag}'] = combined.groupby(['store_nbr', 'family'])['sales'].shift(lag).astype('float32')
+                combined['roll_mean_7'] = combined.groupby(['store_nbr', 'family'])['sales'].shift(1).rolling(7, min_periods=1).mean().astype('float32')
+                forecast_df = combined[combined['date'].isin(target_dates)]
+                
+                # Scale features
+                scaler = StandardScaler()
+                forecast_df[st.session_state.feature_cols] = scaler.fit_transform(forecast_df[st.session_state.feature_cols].fillna(0)).astype('float32')
+                
+                # Generate forecasts
+                for model_name in models:
+                    if model_name in st.session_state.model_results:
+                        st.subheader(f"{model_name} Forecast")
+                        result = st.session_state.model_results[model_name]
+                        if model_name == "Linear Regression":
+                            model_path = result.get('model_path')
+                            if model_path and os.path.exists(model_path):
+                                model = joblib.load(model_path)
+                                X_forecast = forecast_df[st.session_state.feature_cols]
+                                predictions = model.predict(X_forecast)
+                                forecast_df['predicted_sales'] = np.clip(predictions, 0, None)
+                            else:
+                                st.write(f"Model weights not found for {model_name}.")
+                                continue
+                        else:
+                            # Placeholder for non-persistent models
+                            forecast_df['predicted_sales'] = np.full(len(forecast_df), forecast_df['sales'].mean())
+                        
+                        # Aggregate forecasts based on granularity
+                        if time_granularity == "Day":
+                            predicted_sales = forecast_df['predicted_sales'].iloc[0]
+                            st.write(f"Forecasted Sales for {target_date}: **{predicted_sales:.2f}**")
+                        else:
+                            avg_sales = forecast_df['predicted_sales'].mean()
+                            st.write(f"Average Forecasted Sales for {time_granularity} ({year}-{month:02d} if Month): **{avg_sales:.2f}**")
+                        
+                        # Plot
+                        plt.figure(figsize=(10, 5))
+                        plt.plot(forecast_df['date'], forecast_df['predicted_sales'], label=f'{model_name} Forecast')
+                        plt.title(f"{model_name} Sales Forecast for Store {store_nbr}, Family {family}")
                         plt.xlabel("Date")
                         plt.ylabel("Predicted Sales")
                         plt.legend()
@@ -358,7 +498,7 @@ with prediction_tab:
                         plt.savefig(plot_path)
                         plt.close()
                         
-                        # Display forecast plot
+                        # Display plot
                         if os.path.exists(plot_path):
                             image = Image.open(plot_path)
                             st.image(image, caption=f"{model_name} Forecast", use_column_width=True)
