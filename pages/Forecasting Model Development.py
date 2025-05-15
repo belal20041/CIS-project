@@ -89,6 +89,14 @@ with training_tab:
                                'onpromotion': 'int32'}
                 test_dtypes = {'store_nbr': 'int32', 'family': 'category', 
                               'onpromotion': 'int32', 'id': 'int32'}
+                optional_cols = ['city', 'state', 'type_x', 'cluster', 'transactions', 
+                                'dcoilwtico', 'locale', 'locale_name', 'description', 
+                                'transferred', 'type_y']
+                for col in optional_cols:
+                    if col in pd.read_csv(train_file, nrows=1).columns:
+                        train_dtypes[col] = 'category' if col in ['city', 'state', 'type_x', 'locale', 'locale_name', 'description', 'type_y'] else 'float32' if col in ['dcoilwtico', 'transactions', 'cluster'] else 'bool'
+                    if col in pd.read_csv(test_file, nrows=1).columns:
+                        test_dtypes[col] = 'category' if col in ['city', 'state', 'type_x', 'locale', 'locale_name', 'description', 'type_y'] else 'float32' if col in ['dcoilwtico', 'transactions', 'cluster'] else 'bool'
                 train_dtypes[target_col] = 'float32'
                 
                 # Read train.csv in chunks for sampling
@@ -130,48 +138,124 @@ with training_tab:
                     st.error(f"Target column '{target_col}' in train.csv contains invalid numeric values.")
                     return None, None, None, None, None, None, None
                 
-                # Attempt to parse dates with multiple formats
-                date_formats = [
-                    ('%Y-%m-%d', 'YYYY-MM-DD'),
-                    ('%d-%m-%Y', 'DD-MM-YYYY'),
-                    ('%d/%m/%Y', 'DD/MM/YYYY'),
-                    ('%m-%d-%Y', 'MM-DD-YYYY'),
-                    ('%Y/%m/%d', 'YYYY/MM/DD'),
-                    ('%m/%d/%Y', 'MM/DD/YYYY'),
-                    ('%d-%b-%Y', 'DD-MMM-YYYY'),
-                    ('%Y-%m-%d %H:%M:%S', 'YYYY-MM-DD HH:MM:SS'),
-                    ('%d-%m-%Y %H:%M:%S', 'DD-MM-YYYY HH:MM:SS'),
-                    ('%d/%m/%Y %H:%M:%S', 'DD/MM/YYYY HH:MM:SS'),
-                    ('%m-%d-%Y %H:%M:%S', 'MM-DD-YYYY HH:MM:SS'),
-                    ('%m/%d/%Y %H:%M:%S', 'MM/DD/YYYY HH:MM:SS'),
-                    ('%d-%b-%Y %H:%M:%S', 'DD-MMM-YYYY HH:MM:SS')
-                ]
-                
-                # Parse train dates
-                train_date_parsed = False
-                for fmt, fmt_name in date_formats:
-                    train[date_col] = pd.to_datetime(train[date_col], format=fmt, errors='coerce')
-                    if not train[date_col].isna().any():
-                        train_date_parsed = True
-                        train[date_col] = train[date_col].dt.strftime('%Y-%m-%d %H:%M:%S')
-                        train[date_col] = pd.to_datetime(train[date_col])
-                        break
-                if not train_date_parsed:
-                    st.error(f"Invalid date formats in train.csv column '{date_col}'. Tried YYYY-MM-DD, DD-MM-YYYY, DD/MM/YYYY, MM-DD-YYYY, YYYY/MM/DD, MM/DD/YYYY, DD-MMM-YYYY, YYYY-MM-DD HH:MM:SS, DD-MM-YYYY HH:MM:SS, DD/MM/YYYY HH:MM:SS, MM-DD-YYYY HH:MM:SS, MM/DD/YYYY HH:MM:SS, DD-MMM-YYYY HH:MM:SS.")
+                # Parse dates
+                train[date_col] = pd.to_datetime(train[date_col], errors='coerce')
+                if train[date_col].isna().any():
+                    invalid_dates = train[train[date_col].isna()][date_col].unique()[:10]
+                    st.error(f"Invalid date formats in train.csv column '{date_col}'. Sample invalid dates: {invalid_dates}")
                     return None, None, None, None, None, None, None
                 
-                # Parse test dates
-                test_date_parsed = False
-                for fmt, fmt_name in date_formats:
-                    test[date_col] = pd.to_datetime(test[date_col], format=fmt, errors='coerce')
-                    if not test[date_col].isna().any():
-                        test_date_parsed = True
-                        test[date_col] = test[date_col].dt.strftime('%Y-%m-%d %H:%M:%S')
-                        test[date_col] = pd.to_datetime(test[date_col])
-                        break
-                if not test_date_parsed:
-                    st.error(f"Invalid date formats in test.csv column '{date_col}'. Tried YYYY-MM-DD, DD-MM-YYYY, DD/MM/YYYY, MM-DD-YYYY, YYYY/MM/DD, MM/DD/YYYY, DD-MMM-YYYY, YYYY-MM-DD HH:MM:SS, DD-MM-YYYY HH:MM:SS, DD/MM/YYYY HH:MM:SS, MM-DD-YYYY HH:MM:SS, MM/DD/YYYY HH:MM:SS, DD-MMM-YYYY HH:MM:SS.")
+                test[date_col] = pd.to_datetime(test[date_col], errors='coerce')
+                if test[date_col].isna().any():
+                    invalid_dates = test[test[date_col].isna()][date_col].unique()[:10]
+                    st.error(f"Invalid date formats in test.csv column '{date_col}'. Sample invalid dates: {invalid_dates}")
                     return None, None, None, None, None, None, None
+                
+                # Standardize date format
+                train[date_col] = train[date_col].dt.strftime('%Y-%m-%d %H:%M:%S')
+                test[date_col] = test[date_col].dt.strftime('%Y-%m-%d %H:%M:%S')
+                train[date_col] = pd.to_datetime(train[date_col])
+                test[date_col] = pd.to_datetime(test[date_col])
+                
+                # New feature engineering
+                # Sales on promotion
+                train['sales_onpromo'] = train[target_col] * train['onpromotion']
+                
+                # City encoding (mean sales)
+                if 'city' in train.columns and 'city' in test.columns:
+                    city_means = train.groupby('city')[target_col].mean().to_dict()
+                    train['city_encoded'] = train['city'].map(city_means).astype('float32')
+                    test['city_encoded'] = test['city'].map(city_means).fillna(0).astype('float32')
+                else:
+                    st.warning("Column 'city' not found in train or test. Skipping city encoding.")
+                
+                # State encoding (mean sales)
+                if 'state' in train.columns and 'state' in test.columns:
+                    state_means = train.groupby('state')[target_col].mean().to_dict()
+                    train['state_encoded'] = train['state'].map(state_means).astype('float32')
+                    test['state_encoded'] = test['state'].map(state_means).fillna(0).astype('float32')
+                else:
+                    st.warning("Column 'state' not found in train or test. Skipping state encoding.")
+                
+                # Derive month and is_weekend for further features
+                train['month'] = train[date_col].dt.month.astype('int8')
+                train['is_weekend'] = train[date_col].dt.dayofweek.isin([5, 6]).astype('int8')
+                test['month'] = test[date_col].dt.month.astype('int8')
+                test['is_weekend'] = test[date_col].dt.dayofweek.isin([5, 6]).astype('int8')
+                
+                # Average sales per store and month
+                train['avg_sales_store_month'] = train.groupby(['store_nbr', 'month'])[target_col].transform('mean').astype('float32')
+                # For test, use train's mapping
+                if 'store_nbr' in test.columns:
+                    store_month_means = train.groupby(['store_nbr', 'month'])[target_col].mean().to_dict()
+                    test['avg_sales_store_month'] = test.apply(
+                        lambda x: store_month_means.get((x['store_nbr'], x['month']), 0), axis=1
+                    ).astype('float32')
+                
+                # Family frequency encoding
+                if 'family' in train.columns and 'family' in test.columns:
+                    family_freq = train['family'].value_counts(normalize=True).to_dict()
+                    train['family_encoded'] = train['family'].map(family_freq).astype('float32')
+                    test['family_encoded'] = test['family'].map(family_freq).fillna(0).astype('float32')
+                
+                # Locale name frequency encoding
+                if 'locale_name' in train.columns and 'locale_name' in test.columns:
+                    locale_freq = train['locale_name'].value_counts(normalize=True).to_dict()
+                    train['locale_name_encoded'] = train['locale_name'].map(locale_freq).astype('float32')
+                    test['locale_name_encoded'] = test['locale_name'].map(locale_freq).fillna(0).astype('float32')
+                
+                # Holiday indicator
+                if 'description' in train.columns and 'description' in test.columns:
+                    train['is_holiday'] = train['description'].str.contains('Holiday|Navidad', case=False, na=False).astype('int8')
+                    test['is_holiday'] = test['description'].str.contains('Holiday|Navidad', case=False, na=False).astype('int8')
+                
+                # Locale ordinal encoding
+                if 'locale' in train.columns and 'locale' in test.columns:
+                    locale_order = {'National': 2, 'Regional': 1, 'Local': 0}
+                    train['locale_encoded'] = train['locale'].map(locale_order).fillna(0).astype('int8')
+                    test['locale_encoded'] = test['locale'].map(locale_order).fillna(0).astype('int8')
+                
+                # Type_y ordinal encoding
+                if 'type_y' in train.columns and 'type_y' in test.columns:
+                    type_y_order = {'Holiday': 2, 'Event': 1, 'Bridge': 0}
+                    train['type_y_encoded'] = train['type_y'].map(type_y_order).fillna(0).astype('int8')
+                    test['type_y_encoded'] = test['type_y'].map(type_y_order).fillna(0).astype('int8')
+                
+                # Ensure binary columns are int
+                binary_cols = ['transferred', 'is_weekend', 'is_holiday']
+                for col in binary_cols:
+                    if col in train.columns:
+                        train[col] = train[col].astype('int8')
+                    if col in test.columns:
+                        test[col] = test[col].astype('int8')
+                
+                # dcoilwtico binning
+                if 'dcoilwtico' in train.columns and 'dcoilwtico' in test.columns:
+                    q25 = train['dcoilwtico'].quantile(0.25)
+                    q75 = train['dcoilwtico'].quantile(0.75)
+                    if q25 == q75:
+                        bins = [-np.inf, q25, np.inf]
+                        labels = ['low', 'high']
+                    else:
+                        bins = [-np.inf, q25, q75, np.inf]
+                        labels = ['low', 'medium', 'high']
+                    train['dcoilwtico_bin'] = pd.cut(train['dcoilwtico'], bins=bins, labels=labels).astype('category')
+                    test['dcoilwtico_bin'] = pd.cut(test['dcoilwtico'], bins=bins, labels=labels).astype('category')
+                    # Encode bins
+                    bin_order = {label: idx for idx, label in enumerate(labels)}
+                    train['dcoilwtico_bin_encoded'] = train['dcoilwtico_bin'].map(bin_order).fillna(0).astype('int8')
+                    test['dcoilwtico_bin_encoded'] = test['dcoilwtico_bin'].map(bin_order).fillna(0).astype('int8')
+                
+                # Season (quarter)
+                train['season'] = pd.cut(train['month'], bins=[0, 3, 6, 9, 12], labels=['Q1', 'Q2', 'Q3', 'Q4']).astype('category')
+                test['season'] = pd.cut(test['month'], bins=[0, 3, 6, 9, 12], labels=['Q1', 'Q2', 'Q3', 'Q4']).astype('category')
+                season_order = {'Q1': 1, 'Q2': 2, 'Q3': 3, 'Q4': 4}
+                train['season_encoded'] = train['season'].map(season_order).astype('int8')
+                test['season_encoded'] = test['season'].map(season_order).astype('int8')
+                
+                # Promo weekend
+                train['promo_weekend'] = train['onpromotion'] * train['is_weekend'].astype('int32')
+                test['promo_weekend'] = test['onpromotion'] * test['is_weekend'].astype('int32')
                 
                 # Combine train and test
                 train['is_train'] = 1
@@ -179,11 +263,26 @@ with training_tab:
                 combined = pd.concat([train, test]).sort_values(['store_nbr', 'family', date_col])
                 
                 # Aggregate by store, family, date
-                agg_dict = {target_col: 'mean', 'onpromotion': 'sum', 'is_train': 'first', 'id': 'first'}
+                agg_dict = {target_col: 'mean', 'onpromotion': 'sum', 'is_train': 'first', 'id': 'first',
+                           'sales_onpromo': 'mean', 'city_encoded': 'mean', 'state_encoded': 'mean',
+                           'avg_sales_store_month': 'mean', 'family_encoded': 'mean',
+                           'locale_name_encoded': 'mean', 'is_holiday': 'max', 'locale_encoded': 'max',
+                           'type_y_encoded': 'max', 'transferred': 'max', 'is_weekend': 'max',
+                           'dcoilwtico_bin_encoded': 'max', 'season_encoded': 'max', 'promo_weekend': 'sum'}
+                for col in ['city', 'state', 'type_x', 'cluster', 'transactions', 'dcoilwtico']:
+                    if col in combined.columns:
+                        agg_dict[col] = 'first' if col in ['city', 'state', 'type_x'] else 'mean'
                 combined = combined.groupby(['store_nbr', 'family', date_col]).agg(agg_dict).reset_index()
                 combined = combined.astype({'store_nbr': 'int32', 'family': 'category', 
                                           date_col: 'datetime64[ns]', target_col: 'float32', 
-                                          'onpromotion': 'int32', 'is_train': 'int8'})
+                                          'onpromotion': 'int32', 'is_train': 'int8',
+                                          'sales_onpromo': 'float32', 'city_encoded': 'float32',
+                                          'state_encoded': 'float32', 'avg_sales_store_month': 'float32',
+                                          'family_encoded': 'float32', 'locale_name_encoded': 'float32',
+                                          'is_holiday': 'int8', 'locale_encoded': 'int8',
+                                          'type_y_encoded': 'int8', 'transferred': 'int8',
+                                          'is_weekend': 'int8', 'dcoilwtico_bin_encoded': 'int8',
+                                          'season_encoded': 'int8', 'promo_weekend': 'int32'})
                 
                 # Limit to MAX_GROUPS
                 store_family_pairs = combined[['store_nbr', 'family']].drop_duplicates()
@@ -201,15 +300,25 @@ with training_tab:
                 combined[target_col] = combined[target_col].fillna(0).astype('float32')
                 combined['onpromotion'] = combined['onpromotion'].fillna(0).astype('int32')
                 combined['is_train'] = combined['is_train'].fillna(0).astype('int8')
+                for col in ['sales_onpromo', 'city_encoded', 'state_encoded', 'avg_sales_store_month',
+                           'family_encoded', 'locale_name_encoded', 'dcoilwtico', 'transactions',
+                           'cluster', 'promo_weekend']:
+                    if col in combined.columns:
+                        combined[col] = combined[col].fillna(0).astype('float32' if col not in ['promo_weekend'] else 'int32')
+                for col in ['is_holiday', 'locale_encoded', 'type_y_encoded', 'transferred', 
+                           'is_weekend', 'dcoilwtico_bin_encoded', 'season_encoded']:
+                    if col in combined.columns:
+                        combined[col] = combined[col].fillna(0).astype('int8')
+                for col in ['city', 'state', 'type_x']:
+                    if col in combined.columns:
+                        combined[col] = combined[col].fillna(combined[col].mode().iloc[0]).astype('category')
                 
-                # Feature engineering
-                # Date-based features
+                # Feature engineering (existing)
                 combined['day'] = combined[date_col].dt.day.astype('int8')
                 combined['dow'] = combined[date_col].dt.dayofweek.astype('int8')
                 combined['month'] = combined[date_col].dt.month.astype('int8')
                 combined['quarter'] = combined[date_col].dt.quarter.astype('int8')
                 combined['year'] = combined[date_col].dt.year.astype('int16')
-                combined['is_weekend'] = combined['dow'].isin([5, 6]).astype('int8')
                 
                 # Lag features
                 for lag in [7, 14, 28]:
@@ -224,11 +333,20 @@ with training_tab:
                 combined['onpromotion_binary'] = (combined['onpromotion'] > 0).astype('int8')
                 combined['lag_promo_7'] = combined.groupby(['store_nbr', 'family'])['onpromotion'].shift(7).fillna(0).astype('int32')
                 
+                # Additional lag features
+                for col in ['transactions', 'dcoilwtico']:
+                    if col in combined.columns:
+                        combined[f'{col}_lag_7'] = combined.groupby(['store_nbr', 'family'])[col].shift(7).fillna(0).astype('float32')
+                
                 # Encode categorical variables
                 le_store = LabelEncoder()
                 le_family = LabelEncoder()
                 combined['store_nbr_encoded'] = le_store.fit_transform(combined['store_nbr']).astype('int8')
-                combined['family_encoded'] = le_family.fit_transform(combined['family']).astype('int8')
+                combined['family_encoded_le'] = le_family.fit_transform(combined['family']).astype('int8')
+                for col in ['city', 'state', 'type_x']:
+                    if col in combined.columns:
+                        le = LabelEncoder()
+                        combined[f'{col}_encoded_le'] = le.fit_transform(combined[col]).astype('int8')
                 
                 # Scale features
                 feature_cols = [
@@ -236,15 +354,23 @@ with training_tab:
                     'day', 'dow', 'month', 'quarter', 'year', 'is_weekend',
                     'lag_7', 'lag_14', 'lag_28',
                     'roll_mean_7', 'roll_std_7', 'roll_mean_14', 'roll_std_14',
-                    'store_nbr_encoded', 'family_encoded'
+                    'store_nbr_encoded', 'family_encoded_le',
+                    'sales_onpromo', 'city_encoded', 'state_encoded',
+                    'avg_sales_store_month', 'family_encoded', 'locale_name_encoded',
+                    'is_holiday', 'locale_encoded', 'type_y_encoded', 'transferred',
+                    'dcoilwtico_bin_encoded', 'season_encoded', 'promo_weekend'
                 ]
+                for col in ['city_encoded_le', 'state_encoded_le', 'type_x_encoded_le', 
+                           'transactions_lag_7', 'dcoilwtico_lag_7']:
+                    if col in combined.columns:
+                        feature_cols.append(col)
+                
                 scaler = StandardScaler()
                 combined[feature_cols] = scaler.fit_transform(combined[feature_cols]).astype('float32')
                 
                 return combined, feature_cols, scaler, le_store, le_family
             
             def split_data(combined, date_col, target_col):
-                # Split into train, validation, test
                 train = combined[combined['is_train'] == 1]
                 test = combined[combined['is_train'] == 0].drop([target_col], axis=1)
                 train_set = train[train[date_col] <= TRAIN_END]
@@ -256,16 +382,36 @@ with training_tab:
                 mask = y_true > 0
                 return np.mean(np.abs((y_true[mask] - y_pred[mask]) / y_true[mask])) * 100 if mask.sum() > 0 else 0.0
             
+            def to_csv_download(df):
+                buffer = BytesIO()
+                df.to_csv(buffer, index=False)
+                buffer.seek(0)
+                return buffer
+            
             # Process data
             result = load_and_process_data(train_file, test_file, st.session_state.date_column, st.session_state.target_column)
-            if result[0] is None:  # Check if validation failed
+            if result[0] is None:
                 st.stop()
             combined, feature_cols, scaler, le_store, le_family = result
             
-            # Display processed data table
+            # Display processed data table and summary
             st.subheader("Processed Data Preview")
             st.write("Below is a preview of the processed data before model training. Check the 'date' column for correct formatting and other features for validity.")
-            st.dataframe(combined.head(100))  # Show first 100 rows for inspection
+            st.dataframe(combined.head(100))
+            
+            st.write("### Data Summary")
+            st.write(f"Total rows: {len(combined)}")
+            st.write(f"Unique dates: {combined[st.session_state.date_column].nunique()}")
+            st.write(f"Date range: {combined[st.session_state.date_column].min()} to {combined[st.session_state.date_column].max()}")
+            st.write(f"Null counts:")
+            st.write(combined.isna().sum())
+            
+            st.download_button(
+                label="Download Processed Data as CSV",
+                data=to_csv_download(combined),
+                file_name="processed_data.csv",
+                mime="text/csv"
+            )
             
             # Split data
             train_set, val_set, test = split_data(combined, st.session_state.date_column, st.session_state.target_column)
@@ -492,10 +638,33 @@ with specific_prediction_tab:
                 spec_df['is_weekend'] = spec_df['dow'].isin([5, 6]).astype('int8')
                 
                 spec_df['store_nbr_encoded'] = st.session_state.le_store.transform([store_nbr] * len(spec_df)).astype('int8')
-                spec_df['family_encoded'] = st.session_state.le_family.transform([family] * len(spec_df)).astype('int8')
+                spec_df['family_encoded_le'] = st.session_state.le_family.transform([family] * len(spec_df)).astype('int8')
                 
                 spec_df['onpromotion_binary'] = (spec_df['onpromotion'] > 0).astype('int8')
-                spec_df['lag_promo_7'] = 0  # Default for new predictions
+                spec_df['lag_promo_7'] = 0
+                spec_df['promo_weekend'] = spec_df['onpromotion'] * spec_df['is_weekend'].astype('int32')
+                
+                # Additional features for specific prediction
+                if 'city' in train_set.columns:
+                    city_means = train_set.groupby('city')[st.session_state.target_column].mean().to_dict()
+                    spec_df['city_encoded'] = city_means.get(train_set['city'].mode().iloc[0], 0)
+                if 'state' in train_set.columns:
+                    state_means = train_set.groupby('state')[st.session_state.target_column].mean().to_dict()
+                    spec_df['state_encoded'] = state_means.get(train_set['state'].mode().iloc[0], 0)
+                if 'family' in train_set.columns:
+                    family_freq = train_set['family'].value_counts(normalize=True).to_dict()
+                    spec_df['family_encoded'] = family_freq.get(family, 0)
+                spec_df['avg_sales_store_month'] = train_set[train_set['store_nbr'] == store_nbr].groupby('month')[st.session_state.target_column].mean().get(spec_df['month'].iloc[0], 0)
+                spec_df['locale_name_encoded'] = 0
+                spec_df['is_holiday'] = 0
+                spec_df['locale_encoded'] = 0
+                spec_df['type_y_encoded'] = 0
+                spec_df['transferred'] = 0
+                spec_df['dcoilwtico_bin_encoded'] = 0
+                spec_df['season_encoded'] = {'Q1': 1, 'Q2': 2, 'Q3': 3, 'Q4': 4}.get(
+                    pd.cut([spec_df['month'].iloc[0]], bins=[0, 3, 6, 9, 12], labels=['Q1', 'Q2', 'Q3', 'Q4'])[0], 0
+                )
+                spec_df['sales_onpromo'] = 0
                 
                 train_group = st.session_state.train_set[
                     (st.session_state.train_set['store_nbr'] == store_nbr) & 
@@ -624,10 +793,33 @@ with forecasting_tab:
                 forecast_df['is_weekend'] = forecast_df['dow'].isin([5, 6]).astype('int8')
                 
                 forecast_df['store_nbr_encoded'] = st.session_state.le_store.transform([store_nbr] * len(forecast_df)).astype('int8')
-                forecast_df['family_encoded'] = st.session_state.le_family.transform([family] * len(forecast_df)).astype('int8')
+                forecast_df['family_encoded_le'] = st.session_state.le_family.transform([family] * len(forecast_df)).astype('int8')
                 
                 forecast_df['onpromotion_binary'] = (forecast_df['onpromotion'] > 0).astype('int8')
-                forecast_df['lag_promo_7'] = 0  # Default for new forecasts
+                forecast_df['lag_promo_7'] = 0
+                forecast_df['promo_weekend'] = forecast_df['onpromotion'] * forecast_df['is_weekend'].astype('int32')
+                
+                # Additional features for forecasting
+                if 'city' in train_set.columns:
+                    city_means = train_set.groupby('city')[st.session_state.target_column].mean().to_dict()
+                    forecast_df['city_encoded'] = city_means.get(train_set['city'].mode().iloc[0], 0)
+                if 'state' in train_set.columns:
+                    state_means = train_set.groupby('state')[st.session_state.target_column].mean().to_dict()
+                    forecast_df['state_encoded'] = state_means.get(train_set['state'].mode().iloc[0], 0)
+                if 'family' in train_set.columns:
+                    family_freq = train_set['family'].value_counts(normalize=True).to_dict()
+                    forecast_df['family_encoded'] = family_freq.get(family, 0)
+                forecast_df['avg_sales_store_month'] = train_set[train_set['store_nbr'] == store_nbr].groupby('month')[st.session_state.target_column].mean().get(forecast_df['month'].iloc[0], 0)
+                forecast_df['locale_name_encoded'] = 0
+                forecast_df['is_holiday'] = 0
+                forecast_df['locale_encoded'] = 0
+                forecast_df['type_y_encoded'] = 0
+                forecast_df['transferred'] = 0
+                forecast_df['dcoilwtico_bin_encoded'] = 0
+                forecast_df['season_encoded'] = {'Q1': 1, 'Q2': 2, 'Q3': 3, 'Q4': 4}.get(
+                    pd.cut([forecast_df['month'].iloc[0]], bins=[0, 3, 6, 9, 12], labels=['Q1', 'Q2', 'Q3', 'Q4'])[0], 0
+                )
+                forecast_df['sales_onpromo'] = 0
                 
                 train_group = st.session_state.train_set[
                     (st.session_state.train_set['store_nbr'] == store_nbr) & 
