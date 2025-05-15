@@ -11,6 +11,7 @@ from statsmodels.tsa.seasonal import seasonal_decompose
 from statsmodels.tsa.stattools import acf, pacf
 from scipy.signal import periodogram
 from io import BytesIO
+import hashlib
 
 st.set_page_config(layout="wide")
 st.markdown("<h1 style='text-align: center;'>Retail Sales Time Series Analysis</h1>", unsafe_allow_html=True)
@@ -18,6 +19,15 @@ st.markdown("<h1 style='text-align: center;'>Retail Sales Time Series Analysis</
 TRAIN_END = "2017-07-15"
 VAL_END = "2017-08-15"
 
+# Helper function to hash file content for caching
+def hash_file(file):
+    if hasattr(file, 'seek'):
+        file.seek(0)
+    content = file.read()
+    file.seek(0)  # Reset file pointer after reading
+    return hashlib.sha256(content).hexdigest()
+
+@st.cache_data
 def detect_column_types(df, date_col):
     numeric_cols = df.select_dtypes(['int64', 'float64']).columns.tolist()
     if date_col in numeric_cols:
@@ -26,10 +36,9 @@ def detect_column_types(df, date_col):
                        (df[col].dtype in ['object', 'category', 'bool'] or df[col].nunique() / len(df) < 0.05)]
     return numeric_cols, categorical_cols
 
-def load_data(file, date_col, target_col):
-    if hasattr(file, 'seek'):
-        file.seek(0)
-    df = pd.read_csv(file)
+@st.cache_data
+def load_data(file_content, file_hash, date_col, target_col):
+    df = pd.read_csv(BytesIO(file_content))
     df[date_col] = pd.to_datetime(df[date_col], errors='coerce')
     df[['store_nbr', 'onpromotion']] = df[['store_nbr', 'onpromotion']].astype('int32')
     if target_col and target_col in df.columns:
@@ -37,6 +46,7 @@ def load_data(file, date_col, target_col):
     df.dropna(subset=[date_col], inplace=True)
     return df
 
+@st.cache_data
 def prepare_data(train, test, date_col, target_col):
     train['is_train'] = 1
     test['is_train'] = 0
@@ -47,6 +57,7 @@ def prepare_data(train, test, date_col, target_col):
                                 target_col: 'float32', 'onpromotion': 'int32', 'is_train': 'int8'})
     return combined
 
+@st.cache_data
 def fill_missing(combined, target_col):
     grouped = combined.groupby(['store_nbr', 'family'])
     processed_groups = []
@@ -56,6 +67,7 @@ def fill_missing(combined, target_col):
         processed_groups.append(group)
     return pd.concat(processed_groups)
 
+@st.cache_data
 def add_features(combined, date_col, target_col):
     combined['day'] = combined[date_col].dt.day.astype('int8')
     combined['dow'] = combined[date_col].dt.dayofweek.astype('int8')
@@ -68,6 +80,7 @@ def add_features(combined, date_col, target_col):
     combined['roll_mean_7'] = combined.groupby(['store_nbr', 'family'])[target_col].shift(1).rolling(7, min_periods=1).mean().astype('float32')
     return combined
 
+@st.cache_data
 def split_data(combined, date_col, target_col):
     train = combined[combined['is_train'] == 1]
     test = combined[combined['is_train'] == 0].drop([target_col], axis=1)
@@ -75,6 +88,7 @@ def split_data(combined, date_col, target_col):
     val_set = train[(train[date_col] > TRAIN_END) & (train[date_col] <= VAL_END)]
     return train_set, val_set, test
 
+@st.cache_data
 def get_download_file(df, filename):
     buf = BytesIO()
     if not df.empty:
@@ -97,6 +111,7 @@ def reclassify_family(df):
     df['family'] = df['family'].replace(family_map)
     return df
 
+@st.cache_data
 def plot_missingness(df):
     missing_matrix = df.isna().astype(int).to_numpy()
     fig = go.Figure(data=[
@@ -119,6 +134,7 @@ def plot_missingness(df):
     )
     return fig
 
+@st.cache_data
 def plot_sales_trends(df, date_col, granularity='D', family_filter=None, date_range=None):
     # Filter by family if specified
     if family_filter:
@@ -134,16 +150,19 @@ def plot_sales_trends(df, date_col, granularity='D', family_filter=None, date_ra
     fig = px.line(sales_by_date, x=date_col, y='sales', title=f"Total Sales Trends ({granularity}ly)",
                   labels={'sales': 'Total Sales', date_col: 'Date'}, color_discrete_sequence=['blue'])
     
+    # Ensure x-axis is treated as datetime
+    fig.update_xaxes(type='date')
+    
     # Add vertical lines for holidays
     holidays = df[df['type_y'] == 'Holiday'][date_col].unique()
     for holiday in holidays:
-        # Convert Timestamp to string to match x-axis format
-        holiday_str = holiday.strftime('%Y-%m-%d')
-        fig.add_vline(x=holiday_str, line=dict(color="red", dash="dash"), annotation_text="Holiday", annotation_position="top")
+        # Keep holiday as a Timestamp object to match the datetime x-axis
+        fig.add_vline(x=holiday, line=dict(color="red", dash="dash"), annotation_text="Holiday", annotation_position="top")
     
     fig.update_layout(xaxis=dict(tickangle=45), yaxis_gridcolor='lightgray')
     return fig
 
+@st.cache_data
 def plot_weekly_trends(df, date_col, family_filter=None, date_range=None):
     if family_filter:
         df = df[df['family'] == family_filter]
@@ -156,6 +175,7 @@ def plot_weekly_trends(df, date_col, family_filter=None, date_range=None):
     fig.update_layout(xaxis=dict(tickangle=45), yaxis_gridcolor='lightgray')
     return fig
 
+@st.cache_data
 def plot_sales_by_family(df, color_scale='Blues', date_range=None):
     if date_range:
         start_date, end_date = date_range
@@ -167,6 +187,7 @@ def plot_sales_by_family(df, color_scale='Blues', date_range=None):
     fig.update_layout(yaxis=dict(autorange="reversed"), xaxis_gridcolor='lightgray')
     return fig
 
+@st.cache_data
 def plot_sales_by_store(df, color_scale='Blues', date_range=None):
     if date_range:
         start_date, end_date = date_range
@@ -177,6 +198,7 @@ def plot_sales_by_store(df, color_scale='Blues', date_range=None):
     fig.update_layout(xaxis=dict(tickangle=45), yaxis_gridcolor='lightgray')
     return fig
 
+@st.cache_data
 def plot_sales_by_city_state(df, color_scale='Blues', date_range=None):
     if date_range:
         start_date, end_date = date_range
@@ -188,6 +210,7 @@ def plot_sales_by_city_state(df, color_scale='Blues', date_range=None):
     fig.update_layout(yaxis=dict(autorange="reversed"), xaxis_gridcolor='lightgray')
     return fig
 
+@st.cache_data
 def plot_sales_by_type_locale(df, date_range=None):
     if date_range:
         start_date, end_date = date_range
@@ -199,6 +222,7 @@ def plot_sales_by_type_locale(df, date_range=None):
     fig.update_traces(textinfo='percent+label', pull=[0.1 if i == sales_by_type_locale['sales'].idxmax() else 0 for i in range(len(sales_by_type_locale))])
     return fig
 
+@st.cache_data
 def plot_promotion_impact(df, color_scheme='Bold', date_range=None):
     if date_range:
         start_date, end_date = date_range
@@ -208,6 +232,7 @@ def plot_promotion_impact(df, color_scheme='Bold', date_range=None):
     fig.update_layout(xaxis=dict(tickmode='linear'), yaxis_gridcolor='lightgray', legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
     return fig
 
+@st.cache_data
 def plot_sales_vs_oil(df, date_range=None):
     if date_range:
         start_date, end_date = date_range
@@ -217,6 +242,7 @@ def plot_sales_vs_oil(df, date_range=None):
     fig.update_layout(yaxis_gridcolor='lightgray')
     return fig
 
+@st.cache_data
 def plot_monthly_seasonality(df, color_scheme='Pastel', date_range=None):
     if date_range:
         start_date, end_date = date_range
@@ -228,6 +254,7 @@ def plot_monthly_seasonality(df, color_scheme='Pastel', date_range=None):
     fig.update_layout(xaxis=dict(tickmode='linear'), yaxis_gridcolor='lightgray', legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
     return fig
 
+@st.cache_data
 def plot_dow_patterns(df, color_scheme='Pastel', date_range=None):
     if date_range:
         start_date, end_date = date_range
@@ -239,6 +266,7 @@ def plot_dow_patterns(df, color_scheme='Pastel', date_range=None):
     fig.update_layout(xaxis=dict(tickmode='linear'), yaxis_gridcolor='lightgray', legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
     return fig
 
+@st.cache_data
 def plot_seasonal_decomposition(df, date_col, date_range=None):
     if date_range:
         start_date, end_date = date_range
@@ -255,6 +283,7 @@ def plot_seasonal_decomposition(df, date_col, date_range=None):
     st.warning("Not enough data for seasonal decomposition (requires at least 24 months).")
     return None
 
+@st.cache_data
 def plot_autocorrelation(df, target_col, date_range=None):
     if date_range:
         start_date, end_date = date_range
@@ -268,6 +297,7 @@ def plot_autocorrelation(df, target_col, date_range=None):
     fig.update_layout(title="Autocorrelation (ACF) of Sales", xaxis_title="Lag", yaxis_title="Autocorrelation", yaxis_gridcolor='lightgray')
     return fig
 
+@st.cache_data
 def plot_partial_autocorrelation(df, target_col, date_range=None):
     if date_range:
         start_date, end_date = date_range
@@ -281,6 +311,7 @@ def plot_partial_autocorrelation(df, target_col, date_range=None):
     fig.update_layout(title="Partial Autocorrelation (PACF) of Sales", xaxis_title="Lag", yaxis_title="Partial Autocorrelation", yaxis_gridcolor='lightgray')
     return fig
 
+@st.cache_data
 def plot_lag_plot(df, target_col, date_range=None):
     if date_range:
         start_date, end_date = date_range
@@ -291,6 +322,7 @@ def plot_lag_plot(df, target_col, date_range=None):
     fig.update_layout(yaxis_gridcolor='lightgray')
     return fig
 
+@st.cache_data
 def plot_periodogram(df, target_col, date_range=None):
     if date_range:
         start_date, end_date = date_range
@@ -302,7 +334,8 @@ def plot_periodogram(df, target_col, date_range=None):
     fig.update_layout(yaxis_gridcolor='lightgray')
     return fig
 
-def plot_rolling_stats(df, date_col, target_col, date_range=None):
+@st.cache_data
+def plot_rolling_stats(df, date_col, target - target_col, date_range=None):
     if date_range:
         start_date, end_date = date_range
         df = df[(df[date_col] >= start_date) & (df[date_col] <= end_date)]
@@ -314,6 +347,7 @@ def plot_rolling_stats(df, date_col, target_col, date_range=None):
     fig.update_layout(title="Rolling Mean and Std (30 Days)", xaxis_title="Date", yaxis_title="Sales", yaxis_gridcolor='lightgray')
     return fig
 
+@st.cache_data
 def plot_sales_heatmap(df, date_range=None):
     if date_range:
         start_date, end_date = date_range
@@ -335,7 +369,11 @@ def main():
                            'train_outlier_method', 'train_scale', 'train_configured', 'train_df']:
                     st.session_state.pop(key, None)
             with st.form("train_config"):
-                train = load_data(train_file, 'date', 'sales')
+                # Read file content and hash for caching
+                train_file_content = train_file.read()
+                train_file.seek(0)  # Reset file pointer after reading
+                train_file_hash = hash_file(train_file)
+                train = load_data(train_file_content, train_file_hash, 'date', 'sales')
                 st.dataframe(train.head(), height=100)
                 date_col = st.selectbox("Select Date Column", train.columns, index=train.columns.tolist().index('date') if 'date' in train.columns else 0, key="train_date")
                 target_col = st.selectbox("Select Target Column (e.g., sales)", train.columns, index=train.columns.tolist().index('sales') if 'sales' in train.columns else 0, key="train_target")
@@ -348,11 +386,11 @@ def main():
                 st.form_submit_button("Apply Configuration", on_click=lambda: st.session_state.update({
                     'train_date_col': date_col, 'train_target_col': target_col, 'train_numeric_cols': numeric_cols,
                     'train_categorical_cols': categorical_cols, 'train_outlier_method': outlier_method, 'train_scale': scale,
-                    'train_configured': True, 'train_file': train_file
+                    'train_configured': True, 'train_file': train_file, 'train_file_hash': train_file_hash
                 }))
 
             if 'train_configured' in st.session_state and st.session_state['train_configured'] and 'train_file' in st.session_state:
-                train = load_data(st.session_state['train_file'], st.session_state['train_date_col'], st.session_state['train_target_col'])
+                train = load_data(st.session_state['train_file'].read(), st.session_state['train_file_hash'], st.session_state['train_date_col'], st.session_state['train_target_col'])
                 st.session_state['train_df'] = train
                 st.dataframe(train.head(), height=100)
 
@@ -462,7 +500,11 @@ def main():
                            'test_outlier_method', 'test_scale', 'test_configured', 'test_df']:
                     st.session_state.pop(key, None)
             with st.form("test_config"):
-                test = load_data(test_file, 'date', None)
+                # Read file content and hash for caching
+                test_file_content = test_file.read()
+                test_file.seek(0)  # Reset file pointer after reading
+                test_file_hash = hash_file(test_file)
+                test = load_data(test_file_content, test_file_hash, 'date', None)
                 st.dataframe(test.head(), height=100)
                 date_col = st.selectbox("Select Date Column", test.columns, index=test.columns.tolist().index('date') if 'date' in test.columns else 0, key="test_date")
                 numeric_cols, categorical_cols = detect_column_types(test, date_col)
@@ -473,11 +515,12 @@ def main():
                 scale = st.checkbox("Apply Scaling", key="test_scale")
                 st.form_submit_button("Apply Configuration", on_click=lambda: st.session_state.update({
                     'test_date_col': date_col, 'test_numeric_cols': numeric_cols, 'test_categorical_cols': categorical_cols,
-                    'test_outlier_method': outlier_method, 'test_scale': scale, 'test_configured': True, 'test_file': test_file
+                    'test_outlier_method': outlier_method, 'test_scale': scale, 'test_configured': True, 'test_file': test_file,
+                    'test_file_hash': test_file_hash
                 }))
 
             if 'test_configured' in st.session_state and st.session_state['test_configured'] and 'test_file' in st.session_state:
-                test = load_data(st.session_state['test_file'], st.session_state['test_date_col'], None)
+                test = load_data(st.session_state['test_file'].read(), st.session_state['test_file_hash'], st.session_state['test_date_col'], None)
                 st.session_state['test_df'] = test
                 st.dataframe(test.head(), height=100)
 
