@@ -6,14 +6,14 @@ import seaborn as sns
 import missingno as msno
 from sklearn.preprocessing import StandardScaler, LabelEncoder
 from statsmodels.tsa.seasonal import seasonal_decompose
-from statsmodels.tsa.stattools import acf, pacf, adfuller
+from statsmodels.tsa.stattools import acf, pacf
 from scipy.signal import periodogram
 from io import BytesIO
 import os
 import tempfile
 
 st.set_page_config(layout="wide")
-st.markdown("<h1 style='text-align: center;'>Time Series Analysis</h1>", unsafe_allow_html=True)
+st.markdown("<h1 style='text-align: center;'>Retail Sales Time Series Analysis</h1>", unsafe_allow_html=True)
 
 TRAIN_END = "2017-07-15"
 VAL_END = "2017-08-15"
@@ -30,7 +30,7 @@ def load_data(file, date_col, target_col):
     if hasattr(file, 'seek'):
         file.seek(0)
     df = pd.read_csv(file)
-    df[date_col] = pd.to_datetime(df[date_col])
+    df[date_col] = pd.to_datetime(df[date_col], format='%m/%d/%Y')
     df[['store_nbr', 'onpromotion']] = df[['store_nbr', 'onpromotion']].astype('int32')
     if target_col and target_col in df.columns:
         df[target_col] = df[target_col].astype('float32')
@@ -41,9 +41,10 @@ def prepare_data(train, test, date_col, target_col):
     train['is_train'] = 1
     test['is_train'] = 0
     combined = pd.concat([train, test]).sort_values(['store_nbr', 'family', date_col])
-    agg_dict = {target_col: 'mean', 'onpromotion': 'sum', 'is_train': 'first', 'id': 'first'}
+    agg_dict = {target_col: 'sum', 'onpromotion': 'sum', 'is_train': 'first', 'id': 'first'}  # Changed to 'sum' for sales aggregation
     combined = combined.groupby(['store_nbr', 'family', date_col]).agg(agg_dict).reset_index()
-    combined = combined.astype({'store_nbr': 'int32', 'family': 'category', date_col: 'datetime64[ns]', target_col: 'float32', 'onpromotion': 'int32', 'is_train': 'int8'})
+    combined = combined.astype({'store_nbr': 'int32', 'family': 'category', date_col: 'datetime64[ns]', 
+                                target_col: 'float32', 'onpromotion': 'int32', 'is_train': 'int8'})
     return combined
 
 def fill_missing(combined, target_col):
@@ -95,210 +96,118 @@ def explore_data(df, date_col, target_col, numeric_cols, categorical_cols, datas
         st.write("Types:", df.dtypes.to_dict())
         st.write("Uniques:", df.nunique().to_dict())
 
-    st.subheader(f"{dataset_type.capitalize()} Visualizations")
-    
-    # Missingness Matrix
+    st.subheader(f"{dataset_type.capitalize()} Sales Insights")
+
+    # 1. Missingness Matrix
     fig, ax = plt.subplots(figsize=(12, 5))
     msno.matrix(df, ax=ax)
-    plt.title("Missingness Matrix")
+    ax.set_title("Data Missingness Overview")
     plt.savefig(os.path.join(temp_dir, f"{dataset_type}_missing.png"))
     st.pyplot(fig)
     plt.close(fig)
 
     if target_col and target_col in df.columns:
-        # Line Plot
+        # 2. Total Sales Trends Over Time
+        sales_by_date = df.groupby(date_col)['sales'].sum().reset_index()
         fig, ax = plt.subplots(figsize=(12, 5))
-        plt.plot(df[date_col], df[target_col], color='blue')
-        plt.grid(True, alpha=0.3)
+        ax.plot(sales_by_date[date_col], sales_by_date['sales'], color='blue', label='Total Sales')
+        holidays = df[df['type_y'] == 'Holiday'][date_col].unique()
+        for holiday in holidays:
+            ax.axvline(holiday, color='red', linestyle='--', alpha=0.5, label='Holiday' if holiday == holidays[0] else "")
+        ax.grid(True, alpha=0.3)
+        ax.set_title("Total Sales Trends with Holiday Impact")
+        ax.set_xlabel("Date")
+        ax.set_ylabel("Total Sales")
         plt.xticks(rotation=45)
-        plt.title("Time Series Line Plot")
-        plt.xlabel("Date")
-        plt.ylabel(target_col)
+        ax.legend()
         plt.savefig(os.path.join(temp_dir, f"{dataset_type}_trends.png"))
         st.pyplot(fig)
         plt.close(fig)
 
-        # Weekly Trends
-        df_weekly = df.set_index(date_col)[target_col].resample('W').sum().reset_index()
+        # 3. Sales by Product Family
+        sales_by_family = df.groupby('family')['sales'].sum().sort_values(ascending=False)
         fig, ax = plt.subplots(figsize=(12, 5))
-        plt.plot(df_weekly[date_col], df_weekly[target_col], color='blue')
-        plt.grid(True, alpha=0.3)
+        sales_by_family.plot(kind='bar', ax=ax, color='skyblue')
+        ax.grid(True, alpha=0.3)
+        ax.set_title("Total Sales by Product Category")
+        ax.set_xlabel("Product Family")
+        ax.set_ylabel("Total Sales")
         plt.xticks(rotation=45)
-        plt.title("Weekly Trends")
-        plt.xlabel("Date")
-        plt.ylabel(target_col)
-        plt.savefig(os.path.join(temp_dir, f"{dataset_type}_weekly.png"))
+        plt.savefig(os.path.join(temp_dir, f"{dataset_type}_family_sales.png"))
         st.pyplot(fig)
         plt.close(fig)
 
-        # Seasonal Plot
-        df['month'] = df[date_col].dt.month
+        # 4. Sales by Store and City
+        sales_by_store = df.groupby(['store_nbr', 'city'])['sales'].sum().reset_index()
         fig, ax = plt.subplots(figsize=(12, 5))
-        sns.boxplot(x='month', y=target_col, data=df, ax=ax)
-        plt.grid(True, alpha=0.3)
-        plt.title("Seasonal Box Plot (Monthly)")
-        plt.xlabel("Month")
-        plt.ylabel(target_col)
-        plt.savefig(os.path.join(temp_dir, f"{dataset_type}_seasonal.png"))
+        sns.barplot(data=sales_by_store, x='store_nbr', y='sales', hue='city', ax=ax, palette='muted')
+        ax.grid(True, alpha=0.3)
+        ax.set_title("Sales by Store Across Cities")
+        ax.set_xlabel("Store Number")
+        ax.set_ylabel("Total Sales")
+        plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+        plt.savefig(os.path.join(temp_dir, f"{dataset_type}_store_city_sales.png"))
         st.pyplot(fig)
         plt.close(fig)
 
-        # Rolling Statistics
-        rolling = df.set_index(date_col)[target_col].rolling(window=30).agg(['mean', 'std']).dropna()
+        # 5. Impact of Promotions on Sales
         fig, ax = plt.subplots(figsize=(12, 5))
-        plt.plot(rolling.index, rolling['mean'], label='Mean', color='blue')
-        plt.plot(rolling.index, rolling['std'], label='Std', color='orange', alpha=0.5)
-        plt.axhline(0, color='black', linestyle='--')
-        plt.grid(True, alpha=0.3)
-        plt.legend()
-        plt.xticks(rotation=45)
-        plt.title("Rolling Mean and Std (30 Days)")
-        plt.xlabel("Date")
-        plt.ylabel(target_col)
-        plt.savefig(os.path.join(temp_dir, f"{dataset_type}_rolling.png"))
+        sns.boxplot(data=df, x='onpromotion', y='sales', hue='family', ax=ax, palette='muted')
+        ax.grid(True, alpha=0.3)
+        ax.set_title("Sales Distribution by Promotion (by Family)")
+        ax.set_xlabel("On Promotion (0 = No, 1 = Yes)")
+        ax.set_ylabel("Sales")
+        plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+        plt.savefig(os.path.join(temp_dir, f"{dataset_type}_promo_sales.png"))
         st.pyplot(fig)
         plt.close(fig)
 
-        # Seasonal Decomposition
-        df_ts = df.set_index(date_col)[target_col].resample('M').sum()
-        decomp = seasonal_decompose(df_ts, model='additive', period=12)
-        fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(12, 8))
-        decomp.trend.plot(ax=ax1, color='blue')
-        ax1.set_title("Trend")
-        ax1.grid(True, alpha=0.3)
-        decomp.seasonal.plot(ax=ax2, color='blue')
-        ax2.set_title("Seasonal")
-        ax2.grid(True, alpha=0.3)
-        decomp.resid.plot(ax=ax3, color='blue')
-        ax3.set_title("Residual")
-        ax3.grid(True, alpha=0.3)
-        plt.tight_layout()
-        plt.savefig(os.path.join(temp_dir, f"{dataset_type}_decomp.png"))
-        st.pyplot(fig)
-        plt.close(fig)
-
-        # Autocorrelation (ACF)
-        n_lags = 30
-        acf_vals, acf_confint = acf(df[target_col].dropna(), nlags=n_lags, alpha=0.05, fft=False)
+        # 6. Sales During Holidays vs. Non-Holidays
+        df['is_holiday'] = df['type_y'].apply(lambda x: 1 if x == 'Holiday' else 0)
         fig, ax = plt.subplots(figsize=(12, 5))
-        plt.stem(range(len(acf_vals)), acf_vals)
-        plt.fill_between(range(len(acf_vals)), acf_confint[:, 0] - acf_vals, acf_confint[:, 1] - acf_vals, alpha=0.2)
-        plt.axhline(0, color='black', linestyle='--')
-        plt.grid(True, alpha=0.3)
-        plt.title("Autocorrelation (ACF)")
-        plt.xlabel("Lag")
-        plt.ylabel("Autocorrelation")
-        plt.savefig(os.path.join(temp_dir, f"{dataset_type}_acf.png"))
+        sns.boxplot(data=df, x='is_holiday', y='sales', hue='family', ax=ax, palette='muted')
+        ax.grid(True, alpha=0.3)
+        ax.set_title("Sales: Holidays vs. Non-Holidays (by Family)")
+        ax.set_xlabel("Holiday (0 = No, 1 = Yes)")
+        ax.set_ylabel("Sales")
+        plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+        plt.savefig(os.path.join(temp_dir, f"{dataset_type}_holiday_sales.png"))
         st.pyplot(fig)
         plt.close(fig)
 
-        # Partial Autocorrelation (PACF)
-        pacf_vals, pacf_confint = pacf(df[target_col].dropna(), nlags=n_lags, alpha=0.05)
+        # 7. Sales vs. Oil Price
         fig, ax = plt.subplots(figsize=(12, 5))
-        plt.stem(range(len(pacf_vals)), pacf_vals)
-        plt.fill_between(range(len(pacf_vals)), pacf_confint[:, 0] - pacf_vals, pacf_confint[:, 1] - pacf_vals, alpha=0.2)
-        plt.axhline(0, color='black', linestyle='--')
-        plt.grid(True, alpha=0.3)
-        plt.title("Partial Autocorrelation (PACF)")
-        plt.xlabel("Lag")
-        plt.ylabel("Partial Autocorrelation")
-        plt.savefig(os.path.join(temp_dir, f"{dataset_type}_pacf.png"))
+        sns.scatterplot(data=df, x='dcoilwtico', y='sales', ax=ax, color='blue', alpha=0.5)
+        sns.regplot(data=df, x='dcoilwtico', y='sales', ax=ax, scatter=False, color='red')
+        ax.grid(True, alpha=0.3)
+        ax.set_title("Sales vs. Oil Price with Trend")
+        ax.set_xlabel("Oil Price (dcoilwtico)")
+        ax.set_ylabel("Sales")
+        plt.savefig(os.path.join(temp_dir, f"{dataset_type}_oil_sales.png"))
         st.pyplot(fig)
         plt.close(fig)
 
-        # Lag Plot
-        lag = 1
+        # 8. Monthly Sales Seasonality
+        sales_by_month = df.groupby(['month', 'family'])['sales'].mean().reset_index()
         fig, ax = plt.subplots(figsize=(12, 5))
-        plt.scatter(df[target_col].shift(lag), df[target_col], alpha=0.5)
-        plt.grid(True, alpha=0.3)
-        plt.title(f"Lag Plot (Lag={lag})")
-        plt.xlabel(f"{target_col} (t-{lag})")
-        plt.ylabel(f"{target_col} (t)")
-        plt.savefig(os.path.join(temp_dir, f"{dataset_type}_lag.png"))
+        sns.boxplot(data=sales_by_month, x='month', y='sales', hue='family', ax=ax, palette='muted')
+        ax.grid(True, alpha=0.3)
+        ax.set_title("Average Monthly Sales by Family")
+        ax.set_xlabel("Month")
+        ax.set_ylabel("Average Sales")
+        plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+        plt.savefig(os.path.join(temp_dir, f"{dataset_type}_monthly_sales.png"))
         st.pyplot(fig)
         plt.close(fig)
 
-        # Periodogram
-        freq, psd = periodogram(df[target_col].dropna())
-        fig, ax = plt.subplots(figsize=(12, 5))
-        plt.plot(freq, psd, color='blue')
-        plt.axhline(0, color='black', linestyle='--')
-        plt.grid(True, alpha=0.3)
-        plt.title("Periodogram")
-        plt.xlabel("Frequency")
-        plt.ylabel("Power Spectral Density")
-        plt.savefig(os.path.join(temp_dir, f"{dataset_type}_periodogram.png"))
-        st.pyplot(fig)
-        plt.close(fig)
-
-        # Stationarity Plot
-        store, family = 1, 'GROCERY I'
-        ts = df[(df['store_nbr'] == store) & (df['family'] == family)][target_col]
-        ts.index = df[(df['store_nbr'] == store) & (df['family'] == family)][date_col]
-        fig, ax = plt.subplots(figsize=(12, 5))
-        plt.plot(ts, label='Sales', color='blue')
-        plt.plot(ts.rolling(30).mean(), label='30-Day Mean', color='red')
-        plt.plot(ts.rolling(30).std(), label='30-Day Std', color='black', alpha=0.5)
-        plt.axhline(0, color='black', linestyle='--')
-        plt.grid(True, alpha=0.3)
-        plt.legend()
-        plt.xticks(rotation=45)
-        plt.title(f"Stationarity (Store {store}, {family})")
-        plt.xlabel("Date")
-        plt.ylabel(target_col)
-        plt.savefig(os.path.join(temp_dir, f"{dataset_type}_stationarity.png"))
-        st.pyplot(fig)
-        plt.close(fig)
-
-        # ACF of Differenced Series
-        ts_diff = ts.diff().dropna()
-        acf_vals_diff, acf_confint_diff = acf(ts_diff, nlags=20, alpha=0.05, fft=False)
-        fig, ax = plt.subplots(figsize=(12, 5))
-        plt.stem(range(len(acf_vals_diff)), acf_vals_diff)
-        plt.fill_between(range(len(acf_vals_diff)), acf_confint_diff[:, 0] - acf_vals_diff, acf_confint_diff[:, 1] - acf_vals_diff, alpha=0.2)
-        plt.axhline(0, color='black', linestyle='--')
-        plt.grid(True, alpha=0.3)
-        plt.title(f"ACF of Differenced Series (Store {store}, {family})")
-        plt.xlabel("Lag")
-        plt.ylabel("Autocorrelation")
-        plt.savefig(os.path.join(temp_dir, f"{dataset_type}_acf_diff.png"))
-        st.pyplot(fig)
-        plt.close(fig)
-
-        # Categorical Box Plots
-        for col in ['family', 'store_nbr']:
-            if col in df.columns:
-                fig, ax = plt.subplots(figsize=(12, 5))
-                sns.boxplot(x=col, y=target_col, data=df, ax=ax)
-                plt.xticks(rotation=45)
-                plt.grid(True, alpha=0.3)
-                plt.title(f"{target_col} by {col}")
-                plt.xlabel(col)
-                plt.ylabel(target_col)
-                plt.savefig(os.path.join(temp_dir, f"{dataset_type}_sales_{col}.png"))
-                st.pyplot(fig)
-                plt.close(fig)
-
-        # Promotion Box Plot
-        if 'onpromotion' in df.columns:
-            fig, ax = plt.subplots(figsize=(12, 5))
-            sns.boxplot(x='onpromotion', y=target_col, data=df, ax=ax)
-            plt.grid(True, alpha=0.3)
-            plt.title(f"{target_col} by Onpromotion")
-            plt.xlabel("Onpromotion")
-            plt.ylabel(target_col)
-            plt.savefig(os.path.join(temp_dir, f"{dataset_type}_promo.png"))
-            st.pyplot(fig)
-            plt.close(fig)
-
-        # Target Distribution
-        fig, ax = plt.subplots(figsize=(12, 5))
-        sns.histplot(df[target_col], bins=30, kde=True, ax=ax, color='blue', kde_kws={'alpha': 0.2})
-        plt.grid(True, alpha=0.3)
-        plt.title(f"{target_col} Distribution")
-        plt.xlabel(target_col)
-        plt.ylabel("Count")
-        plt.savefig(os.path.join(temp_dir, f"{dataset_type}_dist.png"))
+        # 9. Heatmap: Sales Across Stores and Families
+        pivot_data = df.pivot_table(values='sales', index='store_nbr', columns='family', aggfunc='sum', fill_value=0)
+        fig, ax = plt.subplots(figsize=(12, 8))
+        sns.heatmap(pivot_data, annot=False, cmap='YlOrRd', norm=plt.Normalize(), ax=ax)
+        ax.set_title("Sales Heatmap: Stores vs. Product Families")
+        ax.set_xlabel("Product Family")
+        ax.set_ylabel("Store Number")
+        plt.savefig(os.path.join(temp_dir, f"{dataset_type}_sales_heatmap.png"))
         st.pyplot(fig)
         plt.close(fig)
 
@@ -306,23 +215,24 @@ def main():
     train_tab, test_tab = st.tabs(["Train", "Test"])
 
     with train_tab:
-        train_file = st.file_uploader("Train Data", ['csv'], key="train")
+        train_file = st.file_uploader("Upload Train Data (.csv)", ['csv'], key="train")
         if train_file:
             if 'train_file' in st.session_state and st.session_state['train_file'] != train_file:
-                for key in ['train_date_col', 'train_target_col', 'train_numeric_cols', 'train_categorical_cols', 'train_outlier_method', 'train_scale', 'train_configured', 'train_df']:
+                for key in ['train_date_col', 'train_target_col', 'train_numeric_cols', 'train_categorical_cols', 
+                           'train_outlier_method', 'train_scale', 'train_configured', 'train_df']:
                     st.session_state.pop(key, None)
             with st.form("train_config"):
                 train = load_data(train_file, 'date', None)
                 st.dataframe(train.head(), height=100)
-                date_col = st.selectbox("Date", train.columns, index=train.columns.tolist().index('date') if 'date' in train.columns else 0, key="train_date")
-                target_col = st.selectbox("Target", train.columns, key="train_target")
+                date_col = st.selectbox("Select Date Column", train.columns, index=train.columns.tolist().index('date') if 'date' in train.columns else 0, key="train_date")
+                target_col = st.selectbox("Select Target Column (e.g., sales)", train.columns, index=train.columns.tolist().index('sales') if 'sales' in train.columns else 0, key="train_target")
                 numeric_cols, categorical_cols = detect_column_types(train, date_col)
-                numeric_cols = st.multiselect("Numeric", train.columns, default=['id', 'store_nbr', 'onpromotion', 'cluster', 'dcoilwtico'] if 'store_nbr' in train.columns else numeric_cols, key="train_numeric")
-                categorical_cols = st.multiselect("Categorical", train.columns, default=['store_nbr', 'family', 'onpromotion', 'city', 'state', 'type_x', 'cluster', 'type_y', 'locale', 'locale_name', 'description', 'transferred', 'dcoilwtico'] if 'family' in train.columns else categorical_cols, key="train_categorical")
-                outlier_method = st.selectbox("Outliers", ['None', 'Remove', 'Replace'], index=2, key="train_outlier")
+                numeric_cols = st.multiselect("Numeric Columns", train.columns, default=['id', 'store_nbr', 'onpromotion', 'dcoilwtico', 'transactions'] if all(col in train.columns for col in ['store_nbr', 'onpromotion', 'dcoilwtico']) else numeric_cols, key="train_numeric")
+                categorical_cols = st.multiselect("Categorical Columns", train.columns, default=['family', 'city', 'state', 'type_x', 'type_y', 'locale', 'locale_name', 'description', 'transferred'] if all(col in train.columns for col in ['family', 'city']) else categorical_cols, key="train_categorical")
+                outlier_method = st.selectbox("Handle Outliers", ['None', 'Remove', 'Replace'], index=2, key="train_outlier")
                 outlier_method = outlier_method.lower() if outlier_method != 'None' else None
-                scale = st.checkbox("Scale", key="train_scale")
-                st.form_submit_button("Apply", on_click=lambda: st.session_state.update({
+                scale = st.checkbox("Apply Scaling", key="train_scale")
+                st.form_submit_button("Apply Configuration", on_click=lambda: st.session_state.update({
                     'train_date_col': date_col, 'train_target_col': target_col, 'train_numeric_cols': numeric_cols,
                     'train_categorical_cols': categorical_cols, 'train_outlier_method': outlier_method, 'train_scale': scale,
                     'train_configured': True, 'train_file': train_file
@@ -330,50 +240,51 @@ def main():
 
             if 'train_configured' in st.session_state and st.session_state['train_configured'] and 'train_file' in st.session_state:
                 with st.form("train_process"):
-                    if st.form_submit_button("Run"):
+                    if st.form_submit_button("Generate Insights"):
                         train = load_data(st.session_state['train_file'], st.session_state['train_date_col'], st.session_state['train_target_col'])
                         st.session_state['train_df'] = train
                         explore_data(train, st.session_state['train_date_col'], st.session_state['train_target_col'], 
                                      st.session_state['train_numeric_cols'], st.session_state['train_categorical_cols'], "train")
                         st.dataframe(train.head(), height=100)
                 csv_data, mime = get_download_file(train, "train_processed.csv")
-                st.download_button("Download Train", csv_data, "train_processed.csv", mime, key="train_download")
+                st.download_button("Download Processed Train Data", csv_data, "train_processed.csv", mime, key="train_download")
 
     with test_tab:
-        test_file = st.file_uploader("Test Data", ['csv'], key="test")
+        test_file = st.file_uploader("Upload Test Data (.csv)", ['csv'], key="test")
         if test_file:
             if 'test_file' in st.session_state and st.session_state['test_file'] != test_file:
-                for key in ['test_date_col', 'test_numeric_cols', 'test_categorical_cols', 'test_outlier_method', 'test_scale', 'test_configured', 'test_df']:
+                for key in ['test_date_col', 'test_numeric_cols', 'test_categorical_cols', 
+                           'test_outlier_method', 'test_scale', 'test_configured', 'test_df']:
                     st.session_state.pop(key, None)
             with st.form("test_config"):
                 test = load_data(test_file, 'date', None)
                 st.dataframe(test.head(), height=100)
-                date_col = st.selectbox("Date", test.columns, index=test.columns.tolist().index('date') if 'date' in test.columns else 0, key="test_date")
+                date_col = st.selectbox("Select Date Column", test.columns, index=test.columns.tolist().index('date') if 'date' in test.columns else 0, key="test_date")
                 numeric_cols, categorical_cols = detect_column_types(test, date_col)
-                numeric_cols = st.multiselect("Numeric", test.columns, default=['id', 'store_nbr', 'onpromotion', 'cluster', 'dcoilwtico'] if 'store_nbr' in test.columns else numeric_cols, key="test_numeric")
-                categorical_cols = st.multiselect("Categorical", test.columns, default=['store_nbr', 'family', 'onpromotion', 'city', 'state', 'type_x', 'cluster', 'type_y', 'locale', 'locale_name', 'description', 'transferred', 'dcoilwtico'] if 'family' in test.columns else categorical_cols, key="test_categorical")
-                outlier_method = st.selectbox("Outliers", ['None', 'Remove', 'Replace'], index=2, key="test_outlier")
+                numeric_cols = st.multiselect("Numeric Columns", test.columns, default=['id', 'store_nbr', 'onpromotion', 'dcoilwtico', 'transactions'] if all(col in test.columns for col in ['store_nbr', 'onpromotion', 'dcoilwtico']) else numeric_cols, key="test_numeric")
+                categorical_cols = st.multiselect("Categorical Columns", test.columns, default=['family', 'city', 'state', 'type_x', 'type_y', 'locale', 'locale_name', 'description', 'transferred'] if all(col in test.columns for col in ['family', 'city']) else categorical_cols, key="test_categorical")
+                outlier_method = st.selectbox("Handle Outliers", ['None', 'Remove', 'Replace'], index=2, key="test_outlier")
                 outlier_method = outlier_method.lower() if outlier_method != 'None' else None
-                scale = st.checkbox("Scale", key="test_scale")
-                st.form_submit_button("Apply", on_click=lambda: st.session_state.update({
+                scale = st.checkbox("Apply Scaling", key="test_scale")
+                st.form_submit_button("Apply Configuration", on_click=lambda: st.session_state.update({
                     'test_date_col': date_col, 'test_numeric_cols': numeric_cols, 'test_categorical_cols': categorical_cols,
                     'test_outlier_method': outlier_method, 'test_scale': scale, 'test_configured': True, 'test_file': test_file
                 }))
 
             if 'test_configured' in st.session_state and st.session_state['test_configured'] and 'test_file' in st.session_state:
                 with st.form("test_process"):
-                    if st.form_submit_button("Run"):
+                    if st.form_submit_button("Generate Insights"):
                         test = load_data(st.session_state['test_file'], st.session_state['test_date_col'], None)
                         st.session_state['test_df'] = test
                         explore_data(test, st.session_state['test_date_col'], st.session_state.get('train_target_col', None), 
                                      st.session_state['test_numeric_cols'], st.session_state['test_categorical_cols'], "test")
                         st.dataframe(test.head(), height=100)
                 csv_data, mime = get_download_file(test, "test_processed.csv")
-                st.download_button("Download Test", csv_data, "test_processed.csv", mime, key="test_download")
+                st.download_button("Download Processed Test Data", csv_data, "test_processed.csv", mime, key="test_download")
 
     if 'train_df' in st.session_state and 'test_df' in st.session_state:
         with st.form("feature_engineering"):
-            if st.form_submit_button("Run Features"):
+            if st.form_submit_button("Generate Features"):
                 combined = prepare_data(st.session_state['train_df'], st.session_state['test_df'], 
                                        st.session_state['train_date_col'], st.session_state['train_target_col'])
                 combined = fill_missing(combined, st.session_state['train_target_col'])
@@ -385,14 +296,14 @@ def main():
                 st.dataframe(train_set.head(), height=100)
                 st.dataframe(val_set.head(), height=100)
                 st.dataframe(test.head(), height=100)
-                csv_data, mime = get_download_file(train_set, "train_fe.csv")
-                st.download_button("Download Train Features", csv_data, "train_fe.csv", mime, key="train_fe_download")
-                csv_data, mime = get_download_file(val_set, "val_fe.csv")
-                st.download_button("Download Validation Features", csv_data, "val_fe.csv", mime, key="val_fe_download")
-                csv_data, mime = get_download_file(test, "test_fe.csv")
-                st.download_button("Download Test Features", csv_data, "test_fe.csv", mime, key="test_fe_download")
+                csv_data, mime = get_download_file(train_set, "train_features.csv")
+                st.download_button("Download Train Features", csv_data, "train_features.csv", mime, key="train_fe_download")
+                csv_data, mime = get_download_file(val_set, "val_features.csv")
+                st.download_button("Download Validation Features", csv_data, "val_features.csv", mime, key="val_fe_download")
+                csv_data, mime = get_download_file(test, "test_features.csv")
+                st.download_button("Download Test Features", csv_data, "test_features.csv", mime, key="test_fe_download")
 
-    st.markdown("**By Belal Khamis, Marwa Kotb, Mahmoud Sabry, Mohamed Samy, Hoda Magdy**")
+    st.markdown("**Developed by Belal Khamis, Marwa Kotb, Mahmoud Sabry, Mohamed Samy, Hoda Magdy**")
 
 if __name__ == "__main__":
     main()
