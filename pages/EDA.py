@@ -101,7 +101,7 @@ def plot_correlation_heatmap(df, target_col):
     return fig
 
 def plot_acf(df, date_col, target_col):
-    series = df[(df['store_nbr'] == 1) & (df['family'] == 'GROCERY I')].sort_values(date_col).set_index(date_col)[target_col]
+    series = df[(df['store_nbr'] == 1) & (df['family'] == 'GROCERY I')].groupby(date_col)[target_col].sum()
     if len(series) > 28:
         acf_vals, acf_confint = acf(series.dropna(), nlags=28, alpha=0.05)
         lags = range(len(acf_vals))
@@ -114,7 +114,7 @@ def plot_acf(df, date_col, target_col):
         return fig
 
 def plot_pacf(df, date_col, target_col):
-    series = df[(df['store_nbr'] == 1) & (df['family'] == 'GROCERY I')].sort_values(date_col).set_index(date_col)[target_col]
+    series = df[(df['store_nbr'] == 1) & (df['family'] == 'GROCERY I')].groupby(date_col)[target_col].sum()
     if len(series) > 28:
         pacf_vals, pacf_confint = pacf(series.dropna(), nlags=28, alpha=0.05)
         lags = range(len(pacf_vals))
