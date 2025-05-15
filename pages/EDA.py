@@ -19,9 +19,9 @@ def load_data(file_path, date_col, target_col):
     return df
 
 def plot_sales_trends(df, date_col, target_col, granularity='D'):
-    df[date_col] = pd.to_datetime(df[date_col])  # Ensure date_col is datetime
-    sales_df = df[[target_col]].copy()  # Select target_col before setting index
-    sales_df[date_col] = df[date_col]  # Retain date_col for reset_index
+    df[date_col] = pd.to_datetime(df[date_col])
+    sales_df = df[[target_col]].copy()
+    sales_df[date_col] = df[date_col]
     sales_df.set_index(date_col, inplace=True)
     sales = sales_df.resample(granularity).sum().reset_index()
     fig = px.line(sales, x=date_col, y=target_col, title=f"Sales Trends ({granularity})")
@@ -29,7 +29,7 @@ def plot_sales_trends(df, date_col, target_col, granularity='D'):
     return fig
 
 def plot_sales_by_family(df, target_col):
-    family_map = {'AUTOMOTIVE': 'Tools', 'HARDWARE': 'Tools', 'LAWN AND GARDEN': 'Tools', 'PLAYERS AND ELECTRONICS': 'Tools', 'BEAUTY': 'LifeStyle', 'LINGERIE': 'LifeStyle', 'LADIESWEAR': 'LifeStyle', 'PERSONAL CARE': 'LifeStyle', 'CELEBRATION': 'LifeStyle', 'MAGAZINES': 'LifeStyle', 'BOOKS': 'LifeStyle', 'BABY CARE': 'LifeStyle', 'HOME APPLIANCES': 'Home', 'HOME AND KITCHEN I': 'Home', 'HOME AND KITCHEN II': 'Home', 'HOME CARE': 'Home', 'SCHOOL AND OFFICE SUPPLIES': 'Home', 'GROCERY II': 'Food', 'PET SUPPLIES': 'Food', 'SEAFOOD': 'Food', 'LIQUOR,WINE,BEER': 'Food', 'DELI': 'Daily', 'EGGS': 'Daily'}
+    family_map = {'AUTOMOTIVE': 'Tools', 'HARDWARE': 'Tools', 'LAWN AND GARDEN': 'Tools', 'PLAYERS AND ELECTRONICS': 'Tools', 'BEAUTY': 'LifeStyle', 'LINGERIE': 'LifeStyle', 'LADIESWEAR': 'LifeStyle', 'PERSONAL CARE': "LifeStyle", 'CELEBRATION': 'LifeStyle', 'MAGAZINES': 'LifeStyle', 'BOOKS': 'LifeStyle', 'BABY CARE': 'LifeStyle', 'HOME APPLIANCES': 'Home', 'HOME AND KITCHEN I': 'Home', 'HOME AND KITCHEN II': 'Home', 'HOME CARE': 'Home', 'SCHOOL AND OFFICE SUPPLIES': 'Home', 'GROCERY II': 'Food', 'PET SUPPLIES': 'Food', 'SEAFOOD': 'Food', 'LIQUOR,WINE,BEER': 'Food', 'DELI': 'Daily', 'EGGS': 'Daily'}
     df['family'] = df['family'].replace(family_map)
     sales = df.groupby('family')[target_col].mean().sort_values().reset_index()
     fig = px.bar(sales, y='family', x=target_col, orientation='h', title="Average Sales by Product Category")
@@ -153,9 +153,9 @@ def main():
                     st.session_state['train_df'] = train
                     st.session_state['train_date'] = date_col
                     st.session_state['train_target'] = target_col
-                    st.session_state['configured'] = True
+                    st.session_state['train_configured'] = True
 
-        if 'configured' in st.session_state:
+        if st.session_state.get('train_configured'):
             train = st.session_state['train_df']
             if st.button("Generate Plots"):
                 fig1 = plot_sales_trends(train, st.session_state['train_date'], st.session_state['train_target'], 'D')
@@ -200,11 +200,11 @@ def main():
                 if st.form_submit_button("Apply"):
                     st.session_state['test_df'] = test
                     st.session_state['test_date'] = date_col
-                    st.session_state['configured'] = True
+                    st.session_state['test_configured'] = True
 
-        if 'configured' in st.session_state:
-            test = st.session_state['test_df']
-            if st.button("Generate Plots"):
+        if st.button("Generate Plots", key="test_plots"):
+            if st.session_state.get('test_configured'):
+                test = st.session_state['test_df']
                 fig1 = plot_sales_trends(test, st.session_state['test_date'], 'sales', 'D')
                 fig2 = plot_sales_trends(test, st.session_state['test_date'], 'sales', 'W')
                 fig3 = plot_sales_by_family(test, 'sales')
