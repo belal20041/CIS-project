@@ -6,8 +6,7 @@ import seaborn as sns
 import missingno as msno
 from sklearn.preprocessing import StandardScaler, LabelEncoder
 from statsmodels.tsa.seasonal import seasonal_decompose
-from statsmodels.graphics.tsaplots import plot_acf, plot_pacf
-from statsmodels.tsa.stattools import adfuller
+from statsmodels.tsa.stattools import acf, pacf, adfuller
 from scipy.signal import periodogram
 from io import BytesIO
 import os
@@ -99,7 +98,7 @@ def explore_data(df, date_col, target_col, numeric_cols, categorical_cols, datas
     st.subheader(f"{dataset_type.capitalize()} Visualizations")
     
     # Missingness Matrix
-    fig, ax = plt.subplots(figsize=(8, 3))
+    fig, ax = plt.subplots(figsize=(12, 5))
     msno.matrix(df, ax=ax)
     plt.title("Missingness Matrix")
     plt.savefig(os.path.join(temp_dir, f"{dataset_type}_missing.png"))
@@ -108,41 +107,54 @@ def explore_data(df, date_col, target_col, numeric_cols, categorical_cols, datas
 
     if target_col and target_col in df.columns:
         # Line Plot
-        fig, ax = plt.subplots(figsize=(8, 3))
-        sns.lineplot(x=date_col, y=target_col, data=df, ax=ax)
+        fig, ax = plt.subplots(figsize=(12, 5))
+        plt.plot(df[date_col], df[target_col], color='blue')
+        plt.grid(True, alpha=0.3)
         plt.xticks(rotation=45)
         plt.title("Time Series Line Plot")
+        plt.xlabel("Date")
+        plt.ylabel(target_col)
         plt.savefig(os.path.join(temp_dir, f"{dataset_type}_trends.png"))
         st.pyplot(fig)
         plt.close(fig)
 
         # Weekly Trends
         df_weekly = df.set_index(date_col)[target_col].resample('W').sum().reset_index()
-        fig, ax = plt.subplots(figsize=(8, 3))
-        sns.lineplot(x=date_col, y=target_col, data=df_weekly, ax=ax)
+        fig, ax = plt.subplots(figsize=(12, 5))
+        plt.plot(df_weekly[date_col], df_weekly[target_col], color='blue')
+        plt.grid(True, alpha=0.3)
         plt.xticks(rotation=45)
         plt.title("Weekly Trends")
+        plt.xlabel("Date")
+        plt.ylabel(target_col)
         plt.savefig(os.path.join(temp_dir, f"{dataset_type}_weekly.png"))
         st.pyplot(fig)
         plt.close(fig)
 
         # Seasonal Plot
         df['month'] = df[date_col].dt.month
-        fig, ax = plt.subplots(figsize=(8, 3))
+        fig, ax = plt.subplots(figsize=(12, 5))
         sns.boxplot(x='month', y=target_col, data=df, ax=ax)
-        plt.title("Seasonal Box Plot")
+        plt.grid(True, alpha=0.3)
+        plt.title("Seasonal Box Plot (Monthly)")
+        plt.xlabel("Month")
+        plt.ylabel(target_col)
         plt.savefig(os.path.join(temp_dir, f"{dataset_type}_seasonal.png"))
         st.pyplot(fig)
         plt.close(fig)
 
         # Rolling Statistics
         rolling = df.set_index(date_col)[target_col].rolling(window=30).agg(['mean', 'std']).dropna()
-        fig, ax = plt.subplots(figsize=(8, 3))
-        rolling['mean'].plot(ax=ax, label='Mean')
-        rolling['std'].plot(ax=ax, label='Std', alpha=0.5)
+        fig, ax = plt.subplots(figsize=(12, 5))
+        plt.plot(rolling.index, rolling['mean'], label='Mean', color='blue')
+        plt.plot(rolling.index, rolling['std'], label='Std', color='orange', alpha=0.5)
+        plt.axhline(0, color='black', linestyle='--')
+        plt.grid(True, alpha=0.3)
         plt.legend()
         plt.xticks(rotation=45)
         plt.title("Rolling Mean and Std (30 Days)")
+        plt.xlabel("Date")
+        plt.ylabel(target_col)
         plt.savefig(os.path.join(temp_dir, f"{dataset_type}_rolling.png"))
         st.pyplot(fig)
         plt.close(fig)
@@ -150,66 +162,105 @@ def explore_data(df, date_col, target_col, numeric_cols, categorical_cols, datas
         # Seasonal Decomposition
         df_ts = df.set_index(date_col)[target_col].resample('M').sum()
         decomp = seasonal_decompose(df_ts, model='additive', period=12)
-        fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(8, 6))
-        decomp.trend.plot(ax=ax1, title="Trend")
-        decomp.seasonal.plot(ax=ax2, title="Seasonal")
-        decomp.resid.plot(ax=ax3, title="Residual")
+        fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(12, 8))
+        decomp.trend.plot(ax=ax1, color='blue')
+        ax1.set_title("Trend")
+        ax1.grid(True, alpha=0.3)
+        decomp.seasonal.plot(ax=ax2, color='blue')
+        ax2.set_title("Seasonal")
+        ax2.grid(True, alpha=0.3)
+        decomp.resid.plot(ax=ax3, color='blue')
+        ax3.set_title("Residual")
+        ax3.grid(True, alpha=0.3)
         plt.tight_layout()
         plt.savefig(os.path.join(temp_dir, f"{dataset_type}_decomp.png"))
         st.pyplot(fig)
         plt.close(fig)
 
-        # Autocorrelation
-        fig, ax = plt.subplots(figsize=(8, 3))
-        plot_acf(df[target_col].dropna(), lags=30, ax=ax)
+        # Autocorrelation (ACF)
+        n_lags = 30
+        acf_vals, acf_confint = acf(df[target_col].dropna(), nlags=n_lags, alpha=0.05, fft=False)
+        fig, ax = plt.subplots(figsize=(12, 5))
+        plt.stem(range(len(acf_vals)), acf_vals)
+        plt.fill_between(range(len(acf_vals)), acf_confint[:, 0] - acf_vals, acf_confint[:, 1] - acf_vals, alpha=0.2)
+        plt.axhline(0, color='black', linestyle='--')
+        plt.grid(True, alpha=0.3)
         plt.title("Autocorrelation (ACF)")
+        plt.xlabel("Lag")
+        plt.ylabel("Autocorrelation")
         plt.savefig(os.path.join(temp_dir, f"{dataset_type}_acf.png"))
         st.pyplot(fig)
         plt.close(fig)
 
-        # Partial Autocorrelation
-        fig, ax = plt.subplots(figsize=(8, 3))
-        plot_pacf(df[target_col].dropna(), lags=30, ax=ax)
+        # Partial Autocorrelation (PACF)
+        pacf_vals, pacf_confint = pacf(df[target_col].dropna(), nlags=n_lags, alpha=0.05)
+        fig, ax = plt.subplots(figsize=(12, 5))
+        plt.stem(range(len(pacf_vals)), pacf_vals)
+        plt.fill_between(range(len(pacf_vals)), pacf_confint[:, 0] - pacf_vals, pacf_confint[:, 1] - pacf_vals, alpha=0.2)
+        plt.axhline(0, color='black', linestyle='--')
+        plt.grid(True, alpha=0.3)
         plt.title("Partial Autocorrelation (PACF)")
+        plt.xlabel("Lag")
+        plt.ylabel("Partial Autocorrelation")
         plt.savefig(os.path.join(temp_dir, f"{dataset_type}_pacf.png"))
         st.pyplot(fig)
         plt.close(fig)
 
         # Lag Plot
-        fig, ax = plt.subplots(figsize=(8, 3))
-        pd.plotting.lag_plot(df[target_col], lag=1, ax=ax)
-        plt.title("Lag Plot (Lag=1)")
+        lag = 1
+        fig, ax = plt.subplots(figsize=(12, 5))
+        plt.scatter(df[target_col].shift(lag), df[target_col], alpha=0.5)
+        plt.grid(True, alpha=0.3)
+        plt.title(f"Lag Plot (Lag={lag})")
+        plt.xlabel(f"{target_col} (t-{lag})")
+        plt.ylabel(f"{target_col} (t)")
         plt.savefig(os.path.join(temp_dir, f"{dataset_type}_lag.png"))
         st.pyplot(fig)
         plt.close(fig)
 
         # Periodogram
         freq, psd = periodogram(df[target_col].dropna())
-        fig, ax = plt.subplots(figsize=(8, 3))
-        ax.plot(freq, psd)
+        fig, ax = plt.subplots(figsize=(12, 5))
+        plt.plot(freq, psd, color='blue')
+        plt.axhline(0, color='black', linestyle='--')
+        plt.grid(True, alpha=0.3)
         plt.title("Periodogram")
+        plt.xlabel("Frequency")
+        plt.ylabel("Power Spectral Density")
         plt.savefig(os.path.join(temp_dir, f"{dataset_type}_periodogram.png"))
         st.pyplot(fig)
         plt.close(fig)
 
         # Stationarity Plot
-        store, family = 1, 'AUTOMOTIVE'
+        store, family = 1, 'GROCERY I'
         ts = df[(df['store_nbr'] == store) & (df['family'] == family)][target_col]
-        fig, ax = plt.subplots(figsize=(8, 3))
-        plt.plot(ts, label='Sales')
+        ts.index = df[(df['store_nbr'] == store) & (df['family'] == family)][date_col]
+        fig, ax = plt.subplots(figsize=(12, 5))
+        plt.plot(ts, label='Sales', color='blue')
         plt.plot(ts.rolling(30).mean(), label='30-Day Mean', color='red')
-        plt.plot(ts.rolling(30).std(), label='30-Day Std', color='black')
+        plt.plot(ts.rolling(30).std(), label='30-Day Std', color='black', alpha=0.5)
+        plt.axhline(0, color='black', linestyle='--')
+        plt.grid(True, alpha=0.3)
         plt.legend()
+        plt.xticks(rotation=45)
         plt.title(f"Stationarity (Store {store}, {family})")
+        plt.xlabel("Date")
+        plt.ylabel(target_col)
         plt.savefig(os.path.join(temp_dir, f"{dataset_type}_stationarity.png"))
         st.pyplot(fig)
         plt.close(fig)
 
         # ACF of Differenced Series
         ts_diff = ts.diff().dropna()
-        fig, ax = plt.subplots(figsize=(8, 3))
-        plot_acf(ts_diff, lags=20, ax=ax)
+        acf_vals_diff, acf_confint_diff = acf(ts_diff, nlags=20, alpha=0.05, fft=False)
+        fig, ax = plt.subplots(figsize=(12, 5))
+        plt.stem(range(len(acf_vals_diff)), acf_vals_diff)
+        plt.fill_between(range(len(acf_vals_diff)), acf_confint_diff[:, 0] - acf_vals_diff, acf_confint_diff[:, 1] - acf_vals_diff, alpha=0.2)
+        plt.axhline(0, color='black', linestyle='--')
+        plt.grid(True, alpha=0.3)
         plt.title(f"ACF of Differenced Series (Store {store}, {family})")
+        plt.xlabel("Lag")
+        plt.ylabel("Autocorrelation")
         plt.savefig(os.path.join(temp_dir, f"{dataset_type}_acf_diff.png"))
         st.pyplot(fig)
         plt.close(fig)
@@ -217,27 +268,36 @@ def explore_data(df, date_col, target_col, numeric_cols, categorical_cols, datas
         # Categorical Box Plots
         for col in ['family', 'store_nbr']:
             if col in df.columns:
-                fig, ax = plt.subplots(figsize=(8, 3))
+                fig, ax = plt.subplots(figsize=(12, 5))
                 sns.boxplot(x=col, y=target_col, data=df, ax=ax)
                 plt.xticks(rotation=45)
+                plt.grid(True, alpha=0.3)
                 plt.title(f"{target_col} by {col}")
+                plt.xlabel(col)
+                plt.ylabel(target_col)
                 plt.savefig(os.path.join(temp_dir, f"{dataset_type}_sales_{col}.png"))
                 st.pyplot(fig)
                 plt.close(fig)
 
         # Promotion Box Plot
         if 'onpromotion' in df.columns:
-            fig, ax = plt.subplots(figsize=(8, 3))
+            fig, ax = plt.subplots(figsize=(12, 5))
             sns.boxplot(x='onpromotion', y=target_col, data=df, ax=ax)
+            plt.grid(True, alpha=0.3)
             plt.title(f"{target_col} by Onpromotion")
+            plt.xlabel("Onpromotion")
+            plt.ylabel(target_col)
             plt.savefig(os.path.join(temp_dir, f"{dataset_type}_promo.png"))
             st.pyplot(fig)
             plt.close(fig)
 
         # Target Distribution
-        fig, ax = plt.subplots(figsize=(8, 3))
-        sns.histplot(df[target_col], bins=30, kde=True, ax=ax)
+        fig, ax = plt.subplots(figsize=(12, 5))
+        sns.histplot(df[target_col], bins=30, kde=True, ax=ax, color='blue', kde_kws={'alpha': 0.2})
+        plt.grid(True, alpha=0.3)
         plt.title(f"{target_col} Distribution")
+        plt.xlabel(target_col)
+        plt.ylabel("Count")
         plt.savefig(os.path.join(temp_dir, f"{dataset_type}_dist.png"))
         st.pyplot(fig)
         plt.close(fig)
