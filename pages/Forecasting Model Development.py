@@ -96,16 +96,16 @@ with training_tab:
                 test_content = test_file.getvalue()
                 test = pd.read_csv(BytesIO(test_content), dtype=test_dtypes)
                 
-                # Validate and convert dates (expecting YYYY-MM-DD)
-                train['date'] = pd.to_datetime(train['date'], format='%Y-%m-%d', errors='coerce')
-                test['date'] = pd.to_datetime(test['date'], format='%Y-%m-%d', errors='coerce')
+                # Validate and convert dates (expecting DD-MM-YYYY)
+                train['date'] = pd.to_datetime(train['date'], format='%d-%m-%Y', errors='coerce')
+                test['date'] = pd.to_datetime(test['date'], format='%d-%m-%Y', errors='coerce')
                 
                 # Check for invalid dates
                 if train['date'].isna().any():
-                    st.error("Invalid date formats detected in train.csv. Please ensure dates are in YYYY-MM-DD format.")
+                    st.error("Invalid date formats detected in train.csv. Please ensure dates are in DD-MM-YYYY format.")
                     return None, None, None, None, None, None, None
                 if test['date'].isna().any():
-                    st.error("Invalid date formats detected in test.csv. Please ensure dates are in YYYY-MM-DD format.")
+                    st.error("Invalid date formats detected in test.csv. Please ensure dates are in DD-MM-YYYY format.")
                     return None, None, None, None, None, None, None
                 
                 # Combine train and test
