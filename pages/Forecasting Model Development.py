@@ -96,9 +96,17 @@ with training_tab:
                 test_content = test_file.getvalue()
                 test = pd.read_csv(BytesIO(test_content), dtype=test_dtypes)
                 
-                # Convert dates
-                train['date'] = pd.to_datetime(train['date'], dayfirst=True)
-                test['date'] = pd.to_datetime(test['date'], dayfirst=True)
+                # Validate and convert dates (expecting YYYY-MM-DD)
+                train['date'] = pd.to_datetime(train['date'], format='%Y-%m-%d', errors='coerce')
+                test['date'] = pd.to_datetime(test['date'], format='%Y-%m-%d', errors='coerce')
+                
+                # Check for invalid dates
+                if train['date'].isna().any():
+                    st.error("Invalid date formats detected in train.csv. Please ensure dates are in YYYY-MM-DD format.")
+                    return None, None, None, None, None, None, None
+                if test['date'].isna().any():
+                    st.error("Invalid date formats detected in test.csv. Please ensure dates are in YYYY-MM-DD format.")
+                    return None, None, None, None, None, None, None
                 
                 # Combine train and test
                 train['is_train'] = 1
@@ -160,9 +168,10 @@ with training_tab:
                 return np.mean(np.abs((y_true[mask] - y_pred[mask]) / y_true[mask])) * 100 if mask.sum() > 0 else 0.0
             
             # Process data
-            train_set, val_set, test, feature_cols, scaler, le_store, le_family = load_and_process_data(
-                train_file, test_file
-            )
+            result = load_and_process_data(train_file, test_file)
+            if result[0] is None:  # Check if date validation failed
+                st.stop()
+            train_set, val_set, test, feature_cols, scaler, le_store, le_family = result
             
             # Store in session state
             st.session_state.train_set = train_set
