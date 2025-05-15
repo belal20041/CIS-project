@@ -4,6 +4,7 @@ import numpy as np
 import plotly.graph_objects as go
 import plotly.express as px
 from statsmodels.tsa.seasonal import seasonal_decompose
+from statsmodels.tsa.stattools import acf, pacf
 from scipy.signal import periodogram
 from io import BytesIO
 import hashlib
@@ -162,7 +163,7 @@ def plot_correlation_heatmap(df, target_col):
         z=numeric_df.values,
         x=numeric_df.columns,
         y=numeric_df.columns,
-        colorscale='coolwarm',
+        colorscale='RdBu',  # Changed to Plotly-compatible colorscale
         text=numeric_df.round(2).values,
         texttemplate="%{text}",
         textfont={"size": 10}
