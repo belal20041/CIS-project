@@ -3,11 +3,14 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 import plotly.express as px
+from statsmodels.tsa.seasonal import seasonal_decompose
+from statsmodels.tsa.stattools import acf, pacf
+from scipy.signal import periodogram
 from io import BytesIO
 import hashlib
 
 st.set_page_config(layout="wide")
-st.markdown("<h1 style='text-align: center;'>Retail Sales Analysis</h1>", unsafe_allow_html=True)
+st.markdown("<h1 style='text-align: center;'>Retail Sales Time Series Analysis</h1>", unsafe_allow_html=True)
 
 TRAIN_END = "2017-07-15"
 VAL_END = "2017-08-15"
@@ -70,15 +73,11 @@ def reclassify_family(df):
     df['family'] = df['family'].replace(family_map)
     return df
 
-def plot_missingness(df):
-    missing = df.isna().astype(int).to_numpy().T
-    fig = go.Figure([go.Heatmap(z=missing, x=range(len(df)), y=df.columns, colorscale='Viridis', zmin=0, zmax=1)])
-    fig.update_layout(title="Missing Data Heatmap", xaxis_title="Row Index", yaxis_title="Columns", yaxis_autorange='reversed')
-    return fig
-
-def plot_sales_trends(df, date_col):
-    sales = df.groupby(pd.Grouper(key=date_col, freq='D'))['sales'].sum().reset_index()
-    fig = px.line(sales, x=date_col, y='sales', title="Sales Over Time (Daily)", labels={'sales': 'Total Sales', date_col: 'Date'})
+def plot_sales_trends(df, date_col, granularity='D', family_filter=None):
+    if family_filter:
+        df = df[df['family'] == family_filter]
+    sales = df.groupby(pd.Grouper(key=date_col, freq=granularity))['sales'].sum().reset_index()
+    fig = px.line(sales, x=date_col, y='sales', title=f"Sales Trends ({granularity})", labels={'sales': 'Total Sales', date_col: 'Date'})
     holidays = df[df['type_y'] == 'Holiday'][date_col].unique()
     for holiday in holidays:
         holiday_str = holiday.strftime('%Y-%m-%d')
@@ -104,13 +103,6 @@ def plot_promotion_impact(df):
     fig.update_layout(xaxis_tickmode='linear', yaxis_gridcolor='lightgray')
     return fig
 
-def plot_autocorrelation(df, target_col):
-    acf_vals, _ = acf(df[target_col].dropna(), nlags=30, fft=False)
-    fig = go.Figure()
-    fig.add_trace(go.Bar(x=list(range(len(acf_vals))), y=acf_vals, name="ACF", marker_color='blue'))
-    fig.update_layout(title="Autocorrelation of Sales", xaxis_title="Lag", yaxis_title="Autocorrelation", yaxis_gridcolor='lightgray')
-    return fig
-
 def plot_seasonal_decomposition(df, date_col):
     df_ts = df.set_index(date_col)['sales'].resample('M').sum()
     decomp = seasonal_decompose(df_ts, model='additive', period=12)
@@ -119,6 +111,55 @@ def plot_seasonal_decomposition(df, date_col):
     fig.add_trace(go.Scatter(x=decomp.seasonal.index, y=decomp.seasonal, name="Seasonal", line=dict(color="green")))
     fig.add_trace(go.Scatter(x=decomp.resid.index, y=decomp.resid, name="Residual", line=dict(color="red")))
     fig.update_layout(title="Seasonal Decomposition of Sales", xaxis_title="Date", yaxis_title="Sales", yaxis_gridcolor='lightgray')
+    return fig
+
+def plot_autocorrelation(df, target_col):
+    acf_vals, _ = acf(df[target_col].dropna(), nlags=30, fft=False)
+    fig = go.Figure()
+    fig.add_trace(go.Bar(x=list(range(len(acf_vals))), y=acf_vals, name="ACF", marker_color='blue'))
+    fig.update_layout(title="Autocorrelation (ACF) of Sales", xaxis_title="Lag", yaxis_title="Autocorrelation", yaxis_gridcolor='lightgray')
+    return fig
+
+def plot_partial_autocorrelation(df, target_col):
+    pacf_vals, _ = pacf(df[target_col].dropna(), nlags=30)
+    fig = go.Figure()
+    fig.add_trace(go.Bar(x=list(range(len(pacf_vals))), y=pacf_vals, name="PACF", marker_color='blue'))
+    fig.update_layout(title="Partial Autocorrelation (PACF) of Sales", xaxis_title="Lag", yaxis_title="Partial Autocorrelation", yaxis_gridcolor='lightgray')
+    return fig
+
+def plot_rolling_stats(df, date_col, target_col):
+    rolling = df.set_index(date_col)[target_col].rolling(window=30).agg(['mean', 'std']).dropna().reset_index()
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=rolling[date_col], y=rolling['mean'], name="Rolling Mean", line=dict(color="blue")))
+    fig.add_trace(go.Scatter(x=rolling[date_col], y=rolling['std'], name="Rolling Std", line=dict(color="orange")))
+    fig.update_layout(title="Rolling Mean and Std (30 Days)", xaxis_title="Date", yaxis_title="Sales", yaxis_gridcolor='lightgray')
+    return fig
+
+def plot_periodogram(df, target_col):
+    freq, psd = periodogram(df[target_col].dropna())
+    fig = px.line(x=freq, y=psd, title="Periodogram of Sales", labels={'x': 'Frequency', 'y': 'Power Spectral Density'})
+    fig.update_layout(yaxis_gridcolor='lightgray')
+    return fig
+
+def plot_lag_plot(df, target_col):
+    lag = 1
+    df[f'{target_col}_lag'] = df[target_col].shift(lag)
+    fig = px.scatter(df, x=f'{target_col}_lag', y=target_col, title=f"Lag Plot (Lag={lag})", labels={f'{target_col}_lag': f'Sales (t-{lag})', target_col: 'Sales (t)'})
+    fig.update_layout(yaxis_gridcolor='lightgray')
+    return fig
+
+def plot_sales_by_dow(df, date_col, target_col):
+    df['dow'] = df[date_col].dt.dayofweek
+    sales_by_dow = df.groupby('dow')[target_col].mean().reset_index()
+    fig = px.line(sales_by_dow, x='dow', y=target_col, title="Average Sales by Day of Week", labels={'dow': 'Day of Week (0=Mon, 6=Sun)', target_col: 'Average Sales'})
+    fig.update_layout(xaxis_tickmode='linear', yaxis_gridcolor='lightgray')
+    return fig
+
+def plot_sales_by_month(df, date_col, target_col):
+    df['month'] = df[date_col].dt.month
+    sales_by_month = df.groupby('month')[target_col].mean().reset_index()
+    fig = px.line(sales_by_month, x='month', y=target_col, title="Average Sales by Month", labels={'month': 'Month', target_col: 'Average Sales'})
+    fig.update_layout(xaxis_tickmode='linear', yaxis_gridcolor='lightgray')
     return fig
 
 def main():
@@ -138,37 +179,48 @@ def main():
                 st.dataframe(train.head())
                 date_col = st.selectbox("Date Column", train.columns, index=train.columns.tolist().index('date') if 'date' in train.columns else 0)
                 target_col = st.selectbox("Target Column", train.columns, index=train.columns.tolist().index('sales') if 'sales' in train.columns else 0)
-                st.form_submit_button("Apply")
+                if st.form_submit_button("Apply"):
+                    st.session_state['train_df'] = train
+                    st.session_state['train_date'] = date_col
+                    st.session_state['train_target'] = target_col
+                    st.session_state['configured'] = True
 
             if 'configured' in st.session_state:
-                train = load_data(BytesIO(st.session_state['train_content']), st.session_state['train_date'], st.session_state['train_target'])
-                st.session_state['train_df'] = train
+                train = st.session_state['train_df']
                 st.dataframe(train.head())
 
-                if st.button("Generate Plots"):
-                    fig1 = plot_missingness(train)
-                    fig2 = plot_sales_trends(train, st.session_state['train_date'])
+                if st.button("Generate Time Series Plots"):
+                    fig1 = plot_sales_trends(train, st.session_state['train_date'], 'D')
+                    fig2 = plot_sales_trends(train, st.session_state['train_date'], 'W')
                     fig3 = plot_sales_by_family(train)
                     fig4 = plot_sales_by_store(train)
                     fig5 = plot_promotion_impact(train)
-                    fig6 = plot_autocorrelation(train, st.session_state['train_target'])
-                    fig7 = plot_seasonal_decomposition(train, st.session_state['train_date'])
+                    fig6 = plot_seasonal_decomposition(train, st.session_state['train_date'])
+                    fig7 = plot_autocorrelation(train, st.session_state['train_target'])
+                    fig8 = plot_partial_autocorrelation(train, st.session_state['train_target'])
+                    fig9 = plot_rolling_stats(train, st.session_state['train_date'], st.session_state['train_target'])
+                    fig10 = plot_periodogram(train, st.session_state['train_target'])
+                    fig11 = plot_lag_plot(train, st.session_state['train_target'])
+                    fig12 = plot_sales_by_dow(train, st.session_state['train_date'], st.session_state['train_target'])
+                    fig13 = plot_sales_by_month(train, st.session_state['train_date'], st.session_state['train_target'])
+
                     st.plotly_chart(fig1)
                     st.plotly_chart(fig2)
                     st.plotly_chart(fig3)
                     st.plotly_chart(fig4)
                     st.plotly_chart(fig5)
-                    st.plotly_chart(fig6)
-                    if fig7:
-                        st.plotly_chart(fig7)
+                    if fig6:
+                        st.plotly_chart(fig6)
+                    st.plotly_chart(fig7)
+                    st.plotly_chart(fig8)
+                    st.plotly_chart(fig9)
+                    st.plotly_chart(fig10)
+                    st.plotly_chart(fig11)
+                    st.plotly_chart(fig12)
+                    st.plotly_chart(fig13)
 
                     data = get_download_file(train, "train_data.csv")
                     st.download_button("Download Train Data", data[0], "train_data.csv", data[1])
-
-            with st.form("train_config_update"):
-                date_col = st.selectbox("Date Column", st.session_state['train_df'].columns, index=st.session_state['train_df'].columns.tolist().index(st.session_state.get('train_date', 'date')) if 'train_date' in st.session_state else 0)
-                target_col = st.selectbox("Target Column", st.session_state['train_df'].columns, index=st.session_state['train_df'].columns.tolist().index(st.session_state.get('train_target', 'sales')) if 'train_target' in st.session_state else 0)
-                st.form_submit_button("Apply", on_click=lambda: st.session_state.update({'train_date': date_col, 'train_target': target_col, 'configured': True}))
 
     with test_tab:
         test_file = st.file_uploader("Upload Test Data (.csv)", ['csv'], key="test")
@@ -183,19 +235,22 @@ def main():
                 test = load_data(BytesIO(st.session_state['test_content']), 'date', None)
                 st.dataframe(test.head())
                 date_col = st.selectbox("Date Column", test.columns, index=test.columns.tolist().index('date') if 'date' in test.columns else 0)
-                st.form_submit_button("Apply")
+                if st.form_submit_button("Apply"):
+                    st.session_state['test_df'] = test
+                    st.session_state['test_date'] = date_col
+                    st.session_state['configured'] = True
 
             if 'configured' in st.session_state:
-                test = load_data(BytesIO(st.session_state['test_content']), st.session_state['test_date'], None)
-                st.session_state['test_df'] = test
+                test = st.session_state['test_df']
                 st.dataframe(test.head())
 
-                if st.button("Generate Plots"):
-                    fig1 = plot_missingness(test)
-                    fig2 = plot_sales_trends(test, st.session_state['test_date'])
+                if st.button("Generate Time Series Plots"):
+                    fig1 = plot_sales_trends(test, st.session_state['test_date'], 'D')
+                    fig2 = plot_sales_trends(test, st.session_state['test_date'], 'W')
                     fig3 = plot_sales_by_family(test)
                     fig4 = plot_sales_by_store(test)
                     fig5 = plot_promotion_impact(test)
+
                     st.plotly_chart(fig1)
                     st.plotly_chart(fig2)
                     st.plotly_chart(fig3)
@@ -204,10 +259,6 @@ def main():
 
                     data = get_download_file(test, "test_data.csv")
                     st.download_button("Download Test Data", data[0], "test_data.csv", data[1])
-
-            with st.form("test_config_update"):
-                date_col = st.selectbox("Date Column", st.session_state['test_df'].columns, index=st.session_state['test_df'].columns.tolist().index(st.session_state.get('test_date', 'date')) if 'test_date' in st.session_state else 0)
-                st.form_submit_button("Apply", on_click=lambda: st.session_state.update({'test_date': date_col, 'configured': True}))
 
     if 'train_df' in st.session_state and 'test_df' in st.session_state:
         with st.form("features"):
