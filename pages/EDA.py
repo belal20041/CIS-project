@@ -1,8 +1,8 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
-import seaborn as sns
+import plotly.graph_objects as go
+import plotly.express as px
 import missingno as msno
 from statsmodels.tsa.seasonal import seasonal_decompose
 from statsmodels.tsa.stattools import acf, pacf
@@ -29,7 +29,7 @@ def load_data(file, date_col, target_col):
     if hasattr(file, 'seek'):
         file.seek(0)
     df = pd.read_csv(file)
-    df[date_col] = pd.to_datetime(df[date_col], errors='coerce')  # Removed strict format to handle varying date formats
+    df[date_col] = pd.to_datetime(df[date_col], errors='coerce')
     df[['store_nbr', 'onpromotion']] = df[['store_nbr', 'onpromotion']].astype('int32')
     if target_col and target_col in df.columns:
         df[target_col] = pd.to_numeric(df[target_col], errors='coerce').astype('float32')
@@ -76,7 +76,10 @@ def split_data(combined, date_col, target_col):
 
 def get_download_file(df, filename):
     buf = BytesIO()
-    df.to_csv(buf, index=False)
+    if not df.empty:
+        df.to_csv(buf, index=False)
+    else:
+        buf.write(b"Data frame is empty")
     buf.seek(0)
     return buf.getvalue(), 'text/csv'
 
@@ -107,246 +110,150 @@ def explore_data(df, date_col, target_col, numeric_cols, categorical_cols, datas
     st.subheader(f"{dataset_type.capitalize()} Sales Insights")
 
     # 1. Missingness Matrix
-    fig, ax = plt.subplots(figsize=(12, 5))
-    msno.matrix(df, ax=ax)
-    ax.set_title("Data Missingness Overview")
-    plt.savefig(os.path.join(temp_dir, f"{dataset_type}_missing.png"))
-    st.pyplot(fig)
-    plt.close(fig)
+    msno_matrix = msno.matrix(df)
+    fig = go.Figure(data=[go.Heatmap(z=msno_matrix.data.to_numpy().T, colorscale='Viridis', zmin=0, zmax=1)])
+    fig.update_layout(title="Data Missingness Overview", xaxis_title="Columns", yaxis_title="Rows")
+    st.plotly_chart(fig)
 
     if target_col and target_col in df.columns:
         # 2. Total Sales Trends Over Time
         sales_by_date = df.groupby(date_col)['sales'].sum().reset_index()
-        fig, ax = plt.subplots(figsize=(12, 5))
-        ax.plot(sales_by_date[date_col], sales_by_date['sales'], color='blue', label='Total Sales')
+        fig = px.line(sales_by_date, x=date_col, y='sales', title="Total Sales Trends with Holiday Impact",
+                      labels={'sales': 'Total Sales', date_col: 'Date'}, color_discrete_sequence=['blue'])
         holidays = df[df['type_y'] == 'Holiday'][date_col].unique()
         for holiday in holidays:
-            ax.axvline(holiday, color='red', linestyle='--', alpha=0.5, label='Holiday' if holiday == holidays[0] else "")
-        ax.grid(True, alpha=0.3)
-        ax.set_title("Total Sales Trends with Holiday Impact")
-        ax.set_xlabel("Date")
-        ax.set_ylabel("Total Sales")
-        plt.xticks(rotation=45)
-        ax.legend()
-        plt.savefig(os.path.join(temp_dir, f"{dataset_type}_trends.png"))
-        st.pyplot(fig)
-        plt.close(fig)
+            fig.add_vline(x=holiday, line=dict(color="red", dash="dash"), annotation_text="Holiday", annotation_position="top")
+        fig.update_layout(showlegend=True, xaxis=dict(tickangle=45), yaxis_gridcolor='lightgray')
+        st.plotly_chart(fig)
 
         # 3. Weekly Sales Trends
         df_weekly = df.set_index(date_col)['sales'].resample('W').sum().reset_index()
-        fig, ax = plt.subplots(figsize=(12, 5))
-        ax.plot(df_weekly[date_col], df_weekly['sales'], color='blue')
-        ax.grid(True, alpha=0.3)
-        ax.set_title("Weekly Sales Trends")
-        ax.set_xlabel("Date")
-        ax.set_ylabel("Total Sales")
-        plt.xticks(rotation=45)
-        plt.savefig(os.path.join(temp_dir, f"{dataset_type}_weekly.png"))
-        st.pyplot(fig)
-        plt.close(fig)
+        fig = px.line(df_weekly, x=date_col, y='sales', title="Weekly Sales Trends",
+                      labels={'sales': 'Total Sales', date_col: 'Date'}, color_discrete_sequence=['blue'])
+        fig.update_layout(xaxis=dict(tickangle=45), yaxis_gridcolor='lightgray')
+        st.plotly_chart(fig)
 
         # 4. Sales by Reclassified Product Family
         df = reclassify_family(df.copy())
-        sales_by_family = df.groupby('family')['sales'].mean().sort_values(ascending=False)
-        fig, ax = plt.subplots(figsize=(25, 15))
-        sns.barplot(x=sales_by_family.values, y=sales_by_family.index, ax=ax, color='skyblue')
-        ax.grid(True, alpha=0.3)
-        ax.set_title("Average Sales by Product Category")
-        ax.set_xlabel("Average Sales")
-        ax.set_ylabel("Product Family")
-        plt.savefig(os.path.join(temp_dir, f"{dataset_type}_family_sales.png"))
-        st.pyplot(fig)
-        plt.close(fig)
+        sales_by_family = df.groupby('family')['sales'].mean().sort_values(ascending=False).reset_index()
+        fig = px.bar(sales_by_family, y='family', x='sales', orientation='h', title="Average Sales by Product Category",
+                     labels={'sales': 'Average Sales', 'family': 'Product Family'}, color='sales', color_continuous_scale='Blues')
+        fig.update_layout(yaxis=dict(autorange="reversed"), xaxis_gridcolor='lightgray')
+        st.plotly_chart(fig)
 
         # 5. Sales by Store Number
-        sales_by_store = df.groupby('store_nbr')['sales'].mean().sort_values(ascending=False)
-        fig, ax = plt.subplots(figsize=(25, 15))
-        sns.barplot(x=sales_by_store.index, y=sales_by_store.values, ax=ax, color='skyblue', order=sales_by_store.index)
-        ax.grid(True, alpha=0.3)
-        ax.set_title("Average Sales by Store Number")
-        ax.set_xlabel("Store Number")
-        ax.set_ylabel("Average Sales")
-        plt.savefig(os.path.join(temp_dir, f"{dataset_type}_store_sales.png"))
-        st.pyplot(fig)
-        plt.close(fig)
+        sales_by_store = df.groupby('store_nbr')['sales'].mean().sort_values(ascending=False).reset_index()
+        fig = px.bar(sales_by_store, x='store_nbr', y='sales', title="Average Sales by Store Number",
+                     labels={'sales': 'Average Sales', 'store_nbr': 'Store Number'}, color='sales', color_continuous_scale='Blues')
+        fig.update_layout(xaxis=dict(tickangle=45), yaxis_gridcolor='lightgray')
+        st.plotly_chart(fig)
 
         # 6. Sales by City-State
         df['city_state'] = df['city'] + '_' + df['state']
-        sales_by_city_state = df.groupby('city_state')['sales'].mean().sort_values(ascending=False)
-        fig, ax = plt.subplots(figsize=(30, 20))
-        sns.barplot(x=sales_by_city_state.values, y=sales_by_city_state.index, ax=ax, color='skyblue')
-        ax.grid(True, alpha=0.3)
-        ax.set_title("Average Sales by City-State")
-        ax.set_xlabel("Average Sales")
-        ax.set_ylabel("City-State")
-        plt.savefig(os.path.join(temp_dir, f"{dataset_type}_city_state_sales.png"))
-        st.pyplot(fig)
-        plt.close(fig)
+        sales_by_city_state = df.groupby('city_state')['sales'].mean().sort_values(ascending=False).reset_index()
+        fig = px.bar(sales_by_city_state, y='city_state', x='sales', orientation='h', title="Average Sales by City-State",
+                     labels={'sales': 'Average Sales', 'city_state': 'City-State'}, color='sales', color_continuous_scale='Blues')
+        fig.update_layout(yaxis=dict(autorange="reversed"), xaxis_gridcolor='lightgray')
+        st.plotly_chart(fig)
 
         # 7. Sales by Type-Locale
         df['type_locale'] = df['type_y'] + '_' + df['locale']
-        sales_by_type_locale = df.groupby('type_locale')['sales'].mean()
-        fig, ax = plt.subplots(figsize=(20, 10))
-        sales_by_type_locale.plot.pie(autopct='%1.1f%%', ax=ax, startangle=90, colors=sns.color_palette('muted'))
-        ax.set_title("Sales Distribution by Type-Locale")
-        ax.set_ylabel("")
-        plt.savefig(os.path.join(temp_dir, f"{dataset_type}_type_locale_pie.png"))
-        st.pyplot(fig)
-        plt.close(fig)
+        sales_by_type_locale = df.groupby('type_locale')['sales'].mean().reset_index()
+        fig = px.pie(sales_by_type_locale, names='type_locale', values='sales', title="Sales Distribution by Type-Locale",
+                     color_discrete_sequence=px.colors.qualitative.Pastel)
+        fig.update_traces(textinfo='percent+label', pull=[0.1 if i == sales_by_type_locale['sales'].idxmax() else 0 for i in range(len(sales_by_type_locale))])
+        st.plotly_chart(fig)
 
         # 8. Impact of Promotions on Sales
-        fig, ax = plt.subplots(figsize=(12, 5))
-        sns.boxplot(data=df, x='onpromotion', y='sales', hue='family', ax=ax, palette='muted')
-        ax.grid(True, alpha=0.3)
-        ax.set_title("Sales Distribution by Promotion (by Family)")
-        ax.set_xlabel("On Promotion (0 = No, 1 = Yes)")
-        ax.set_ylabel("Sales")
-        plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
-        plt.savefig(os.path.join(temp_dir, f"{dataset_type}_promo_sales.png"))
-        st.pyplot(fig)
-        plt.close(fig)
+        fig = px.box(df, x='onpromotion', y='sales', color='family', title="Sales Distribution by Promotion (by Family)",
+                     labels={'sales': 'Sales', 'onpromotion': 'On Promotion (0 = No, 1 = Yes)'}, color_discrete_sequence=px.colors.qualitative.Bold)
+        fig.update_layout(xaxis=dict(tickmode='linear'), yaxis_gridcolor='lightgray', legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+        st.plotly_chart(fig)
 
         # 9. Sales vs. Oil Price
-        fig, ax = plt.subplots(figsize=(12, 5))
-        sns.scatterplot(data=df, x='dcoilwtico', y='sales', ax=ax, color='blue', alpha=0.5)
-        sns.regplot(data=df, x='dcoilwtico', y='sales', ax=ax, scatter=False, color='red')
-        ax.grid(True, alpha=0.3)
-        ax.set_title("Sales vs. Oil Price with Trend")
-        ax.set_xlabel("Oil Price (dcoilwtico)")
-        ax.set_ylabel("Sales")
-        plt.savefig(os.path.join(temp_dir, f"{dataset_type}_oil_sales.png"))
-        st.pyplot(fig)
-        plt.close(fig)
+        fig = px.scatter(df, x='dcoilwtico', y='sales', trendline="ols", title="Sales vs. Oil Price with Trend",
+                         labels={'sales': 'Sales', 'dcoilwtico': 'Oil Price (dcoilwtico)'}, color_discrete_sequence=['blue'])
+        fig.update_layout(yaxis_gridcolor='lightgray')
+        st.plotly_chart(fig)
 
         # 10. Monthly Sales Seasonality
         df['month'] = df[date_col].dt.month
         sales_by_month = df.groupby(['month', 'family'])['sales'].mean().reset_index()
-        fig, ax = plt.subplots(figsize=(12, 5))
-        sns.boxplot(data=sales_by_month, x='month', y='sales', hue='family', ax=ax, palette='muted')
-        ax.grid(True, alpha=0.3)
-        ax.set_title("Average Monthly Sales by Family")
-        ax.set_xlabel("Month")
-        ax.set_ylabel("Average Sales")
-        plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
-        plt.savefig(os.path.join(temp_dir, f"{dataset_type}_monthly_sales.png"))
-        st.pyplot(fig)
-        plt.close(fig)
+        fig = px.box(sales_by_month, x='month', y='sales', color='family', title="Average Monthly Sales by Family",
+                     labels={'sales': 'Average Sales', 'month': 'Month'}, color_discrete_sequence=px.colors.qualitative.Pastel)
+        fig.update_layout(xaxis=dict(tickmode='linear'), yaxis_gridcolor='lightgray', legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+        st.plotly_chart(fig)
 
         # 11. Day-of-Week Sales Patterns
         df['dow'] = df[date_col].dt.dayofweek
         sales_by_dow = df.groupby(['dow', 'family'])['sales'].mean().reset_index()
-        fig, ax = plt.subplots(figsize=(12, 5))
-        sns.boxplot(data=sales_by_dow, x='dow', y='sales', hue='family', ax=ax, palette='muted')
-        ax.grid(True, alpha=0.3)
-        ax.set_title("Average Sales by Day of Week (by Family)")
-        ax.set_xlabel("Day of Week (0=Mon, 6=Sun)")
-        ax.set_ylabel("Average Sales")
-        plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
-        plt.savefig(os.path.join(temp_dir, f"{dataset_type}_dow_sales.png"))
-        st.pyplot(fig)
-        plt.close(fig)
+        fig = px.box(sales_by_dow, x='dow', y='sales', color='family', title="Average Sales by Day of Week (by Family)",
+                     labels={'sales': 'Average Sales', 'dow': 'Day of Week (0=Mon, 6=Sun)'}, color_discrete_sequence=px.colors.qualitative.Pastel)
+        fig.update_layout(xaxis=dict(tickmode='linear'), yaxis_gridcolor='lightgray', legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+        st.plotly_chart(fig)
 
         # 12. Seasonal Decomposition (Monthly)
         df_ts = df.set_index(date_col)['sales'].resample('M').sum()
         if len(df_ts) >= 24:  # Ensure enough data for decomposition (at least 2 years)
             decomp = seasonal_decompose(df_ts, model='additive', period=12)
-            fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(12, 8))
-            decomp.trend.plot(ax=ax1, color='blue')
-            ax1.set_title("Trend Component")
-            ax1.grid(True, alpha=0.3)
-            decomp.seasonal.plot(ax=ax2, color='blue')
-            ax2.set_title("Seasonal Component")
-            ax2.grid(True, alpha=0.3)
-            decomp.resid.plot(ax=ax3, color='blue')
-            ax3.set_title("Residual Component")
-            ax3.grid(True, alpha=0.3)
-            plt.tight_layout()
-            plt.savefig(os.path.join(temp_dir, f"{dataset_type}_decomp.png"))
-            st.pyplot(fig)
-            plt.close(fig)
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=decomp.trend.index, y=decomp.trend, name="Trend", line=dict(color="blue")))
+            fig.add_trace(go.Scatter(x=decomp.seasonal.index, y=decomp.seasonal, name="Seasonal", line=dict(color="green")))
+            fig.add_trace(go.Scatter(x=decomp.resid.index, y=decomp.resid, name="Residual", line=dict(color="red")))
+            fig.update_layout(title="Seasonal Decomposition of Sales", xaxis_title="Date", yaxis_title="Sales", yaxis_gridcolor='lightgray')
+            st.plotly_chart(fig)
         else:
             st.write("Not enough data for seasonal decomposition (requires at least 24 months).")
 
         # 13. Autocorrelation (ACF)
         n_lags = 30
         acf_vals, acf_confint = acf(df[target_col].dropna(), nlags=n_lags, alpha=0.05, fft=False)
-        fig, ax = plt.subplots(figsize=(12, 5))
-        plt.stem(range(len(acf_vals)), acf_vals)
-        plt.fill_between(range(len(acf_vals)), acf_confint[:, 0] - acf_vals, acf_confint[:, 1] - acf_vals, alpha=0.2)
-        plt.axhline(0, color='black', linestyle='--')
-        plt.grid(True, alpha=0.3)
-        plt.title("Autocorrelation (ACF) of Sales")
-        plt.xlabel("Lag")
-        plt.ylabel("Autocorrelation")
-        plt.savefig(os.path.join(temp_dir, f"{dataset_type}_acf.png"))
-        st.pyplot(fig)
-        plt.close(fig)
+        fig = go.Figure()
+        fig.add_trace(go.Bar(x=list(range(len(acf_vals))), y=acf_vals, name="ACF", marker_color='blue'))
+        fig.add_trace(go.Scatter(x=list(range(len(acf_vals))), y=acf_confint[:, 0], fill=None, mode='lines', line_color='rgba(0,0,0,0)', showlegend=False))
+        fig.add_trace(go.Scatter(x=list(range(len(acf_vals))), y=acf_confint[:, 1], fill='tonexty', mode='lines', line_color='rgba(0,0,255,0.2)', name="Confidence Interval"))
+        fig.update_layout(title="Autocorrelation (ACF) of Sales", xaxis_title="Lag", yaxis_title="Autocorrelation", yaxis_gridcolor='lightgray')
+        st.plotly_chart(fig)
 
         # 14. Partial Autocorrelation (PACF)
         pacf_vals, pacf_confint = pacf(df[target_col].dropna(), nlags=n_lags, alpha=0.05)
-        fig, ax = plt.subplots(figsize=(12, 5))
-        plt.stem(range(len(pacf_vals)), pacf_vals)
-        plt.fill_between(range(len(pacf_vals)), pacf_confint[:, 0] - pacf_vals, pacf_confint[:, 1] - pacf_vals, alpha=0.2)
-        plt.axhline(0, color='black', linestyle='--')
-        plt.grid(True, alpha=0.3)
-        plt.title("Partial Autocorrelation (PACF) of Sales")
-        plt.xlabel("Lag")
-        plt.ylabel("Partial Autocorrelation")
-        plt.savefig(os.path.join(temp_dir, f"{dataset_type}_pacf.png"))
-        st.pyplot(fig)
-        plt.close(fig)
+        fig = go.Figure()
+        fig.add_trace(go.Bar(x=list(range(len(pacf_vals))), y=pacf_vals, name="PACF", marker_color='blue'))
+        fig.add_trace(go.Scatter(x=list(range(len(pacf_vals))), y=pacf_confint[:, 0], fill=None, mode='lines', line_color='rgba(0,0,0,0)', showlegend=False))
+        fig.add_trace(go.Scatter(x=list(range(len(pacf_vals))), y=pacf_confint[:, 1], fill='tonexty', mode='lines', line_color='rgba(0,0,255,0.2)', name="Confidence Interval"))
+        fig.update_layout(title="Partial Autocorrelation (PACF) of Sales", xaxis_title="Lag", yaxis_title="Partial Autocorrelation", yaxis_gridcolor='lightgray')
+        st.plotly_chart(fig)
 
         # 15. Lag Plot
         lag = 1
-        fig, ax = plt.subplots(figsize=(12, 5))
-        plt.scatter(df[target_col].shift(lag), df[target_col], alpha=0.5, color='blue')
-        plt.grid(True, alpha=0.3)
-        plt.title(f"Lag Plot (Lag={lag})")
-        plt.xlabel(f"Sales (t-{lag})")
-        plt.ylabel("Sales (t)")
-        plt.savefig(os.path.join(temp_dir, f"{dataset_type}_lag.png"))
-        st.pyplot(fig)
-        plt.close(fig)
+        fig = px.scatter(df, x=target_col.shift(lag), y=target_col, trendline="ols", title=f"Lag Plot (Lag={lag})",
+                         labels={f"{target_col}.shift({lag})": f"Sales (t-{lag})", target_col: "Sales (t)"}, color_discrete_sequence=['blue'])
+        fig.update_layout(yaxis_gridcolor='lightgray')
+        st.plotly_chart(fig)
 
         # 16. Periodogram
         freq, psd = periodogram(df[target_col].dropna())
-        fig, ax = plt.subplots(figsize=(12, 5))
-        plt.plot(freq, psd, color='blue')
-        plt.axhline(0, color='black', linestyle='--')
-        plt.grid(True, alpha=0.3)
-        plt.title("Periodogram of Sales")
-        plt.xlabel("Frequency")
-        plt.ylabel("Power Spectral Density")
-        plt.savefig(os.path.join(temp_dir, f"{dataset_type}_periodogram.png"))
-        st.pyplot(fig)
-        plt.close(fig)
+        fig = px.line(x=freq, y=psd, title="Periodogram of Sales",
+                      labels={'x': 'Frequency', 'y': 'Power Spectral Density'}, color_discrete_sequence=['blue'])
+        fig.add_hline(y=0, line=dict(color="black", dash="dash"))
+        fig.update_layout(yaxis_gridcolor='lightgray')
+        st.plotly_chart(fig)
 
         # 17. Rolling Statistics for Stationarity
-        rolling = df.set_index(date_col)['sales'].rolling(window=30).agg(['mean', 'std']).dropna()
-        fig, ax = plt.subplots(figsize=(12, 5))
-        plt.plot(rolling.index, rolling['mean'], label='Mean', color='blue')
-        plt.plot(rolling.index, rolling['std'], label='Std', color='orange', alpha=0.5)
-        plt.axhline(0, color='black', linestyle='--')
-        plt.grid(True, alpha=0.3)
-        plt.legend()
-        plt.xticks(rotation=45)
-        plt.title("Rolling Mean and Std (30 Days)")
-        plt.xlabel("Date")
-        plt.ylabel("Sales")
-        plt.savefig(os.path.join(temp_dir, f"{dataset_type}_rolling.png"))
-        st.pyplot(fig)
-        plt.close(fig)
+        rolling = df.set_index(date_col)[target_col].rolling(window=30).agg(['mean', 'std']).dropna().reset_index()
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=rolling[date_col], y=rolling['mean'], name="Mean", line=dict(color="blue")))
+        fig.add_trace(go.Scatter(x=rolling[date_col], y=rolling['std'], name="Std", line=dict(color="orange", dash="dot")))
+        fig.add_hline(y=0, line=dict(color="black", dash="dash"))
+        fig.update_layout(title="Rolling Mean and Std (30 Days)", xaxis_title="Date", yaxis_title="Sales", yaxis_gridcolor='lightgray')
+        st.plotly_chart(fig)
 
         # 18. Heatmap: Sales Across Stores and Families
         pivot_data = df.pivot_table(values='sales', index='store_nbr', columns='family', aggfunc='sum', fill_value=0)
-        fig, ax = plt.subplots(figsize=(12, 8))
-        sns.heatmap(pivot_data, annot=False, cmap='YlOrRd', norm=plt.Normalize(), ax=ax)
-        ax.set_title("Sales Heatmap: Stores vs. Product Families")
-        ax.set_xlabel("Product Family")
-        ax.set_ylabel("Store Number")
-        plt.savefig(os.path.join(temp_dir, f"{dataset_type}_sales_heatmap.png"))
-        st.pyplot(fig)
-        plt.close(fig)
+        fig = px.imshow(pivot_data, text_auto=True, aspect="auto", title="Sales Heatmap: Stores vs. Product Families",
+                        labels={'x': 'Product Family', 'y': 'Store Number'}, color_continuous_scale='YlOrRd')
+        fig.update_layout(xaxis=dict(side="top"), yaxis_gridcolor='lightgray')
+        st.plotly_chart(fig)
 
 def main():
     train_tab, test_tab = st.tabs(["Train", "Test"])
@@ -384,7 +291,8 @@ def main():
                                      st.session_state['train_numeric_cols'], st.session_state['train_categorical_cols'], "train")
                         st.dataframe(train.head(), height=100)
                 csv_data, mime = get_download_file(train, "train_processed.csv")
-                st.download_button("Download Processed Train Data", csv_data, "train_processed.csv", mime, key="train_download")
+                if csv_data and mime:
+                    st.download_button("Download Processed Train Data", csv_data, "train_processed.csv", mime, key="train_download")
 
     with test_tab:
         test_file = st.file_uploader("Upload Test Data (.csv)", ['csv'], key="test")
@@ -399,7 +307,7 @@ def main():
                 date_col = st.selectbox("Select Date Column", test.columns, index=test.columns.tolist().index('date') if 'date' in test.columns else 0, key="test_date")
                 numeric_cols, categorical_cols = detect_column_types(test, date_col)
                 numeric_cols = st.multiselect("Numeric Columns", test.columns, default=['id', 'store_nbr', 'onpromotion', 'dcoilwtico', 'transactions'] if all(col in test.columns for col in ['store_nbr', 'onpromotion', 'dcoilwtico']) else numeric_cols, key="test_numeric")
-                categorical_cols = st.multiselect("Categorical Columns", test.columns, default=['family', 'city', 'state', 'type_x', 'type_y', 'locale', 'locale_name', 'description', 'transferred'] if all(col in train.columns for col in ['family', 'city']) else categorical_cols, key="test_categorical")
+                categorical_cols = st.multiselect("Categorical Columns", test.columns, default=['family', 'city', 'state', 'type_x', 'type_y', 'locale', 'locale_name', 'description', 'transferred'] if all(col in test.columns for col in ['family', 'city']) else categorical_cols, key="test_categorical")
                 outlier_method = st.selectbox("Handle Outliers", ['None', 'Remove', 'Replace'], index=2, key="test_outlier")
                 outlier_method = outlier_method.lower() if outlier_method != 'None' else None
                 scale = st.checkbox("Apply Scaling", key="test_scale")
@@ -417,7 +325,8 @@ def main():
                                      st.session_state['test_numeric_cols'], st.session_state['test_categorical_cols'], "test")
                         st.dataframe(test.head(), height=100)
                 csv_data, mime = get_download_file(test, "test_processed.csv")
-                st.download_button("Download Processed Test Data", csv_data, "test_processed.csv", mime, key="test_download")
+                if csv_data and mime:
+                    st.download_button("Download Processed Test Data", csv_data, "test_processed.csv", mime, key="test_download")
 
     if 'train_df' in st.session_state and 'test_df' in st.session_state:
         with st.form("feature_engineering"):
@@ -434,11 +343,14 @@ def main():
                 st.dataframe(val_set.head(), height=100)
                 st.dataframe(test.head(), height=100)
                 csv_data, mime = get_download_file(train_set, "train_features.csv")
-                st.download_button("Download Train Features", csv_data, "train_features.csv", mime, key="train_fe_download")
+                if csv_data and mime:
+                    st.download_button("Download Train Features", csv_data, "train_features.csv", mime, key="train_fe_download")
                 csv_data, mime = get_download_file(val_set, "val_features.csv")
-                st.download_button("Download Validation Features", csv_data, "val_features.csv", mime, key="val_fe_download")
+                if csv_data and mime:
+                    st.download_button("Download Validation Features", csv_data, "val_features.csv", mime, key="val_fe_download")
                 csv_data, mime = get_download_file(test, "test_features.csv")
-                st.download_button("Download Test Features", csv_data, "test_features.csv", mime, key="test_fe_download")
+                if csv_data and mime:
+                    st.download_button("Download Test Features", csv_data, "test_features.csv", mime, key="test_fe_download")
 
     st.markdown("**Developed by Belal Khamis, Marwa Kotb, Mahmoud Sabry, Mohamed Samy, Hoda Magdy**")
 
