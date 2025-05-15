@@ -170,7 +170,7 @@ def load_and_process_data(train_file, test_file, date_col, target_col):
         if col in train.columns and col in test.columns:
             freq = train[freq_col].value_counts(normalize=True).to_dict()
             train[f'{col}_encoded'] = train[col].map(freq).astype('float32')
-            test[f'{col}_encoded'] = test[col].map(freq).fillna(0).astype('float32')
+            test[f'{col}_encoded'] = test[col].map(freq).astype('float32').fillna(0)
 
     if 'description' in train.columns and 'description' in test.columns:
         train['is_holiday'] = train['description'].str.contains('Holiday|Navidad', case=False, na=False).astype('int8')
