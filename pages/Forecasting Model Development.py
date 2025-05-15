@@ -7,11 +7,13 @@ import tempfile
 from PIL import Image
 from sklearn.preprocessing import StandardScaler, LabelEncoder
 from sklearn.metrics import mean_squared_error, mean_absolute_error, mean_absolute_percentage_error
+from sklearn.linear_model import LinearRegression
 import xgboost as xgb
 from pmdarima import auto_arima
 from prophet import Prophet
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense
+from statsmodels.tsa.holtwinters import SimpleExpSmoothing, Holt
 import psutil
 import warnings
 warnings.filterwarnings("ignore")
@@ -111,310 +113,102 @@ with training_tab:
     st.subheader("Upload Data")
     train_file = st.file_uploader("Upload Train CSV", type="csv", key="uploader_train")
     test_file = st.file_uploader("Upload Test CSV", type="csv", key="uploader_test")
-    sub_file = st.file_uploader("Upload Submission CSV", type="csv", key="uploader_sub")
-    
-    # Model selection
-    models = ["XGBoost", "ARIMA", "SARIMA", "Prophet", "LSTM"]
-    selected_models = st.multiselect("Select Models to Train", models, default=["XGBoost"])
-    
-    # Train button
-    train_button = st.button("Train Models")
-    
-    st.divider()  # Separator between inputs and outputs
-    
-    if train_button and train_file and test_file and sub_file and selected_models:
-        with st.spinner("Training models..."):
-            # Load and process data
-            train_set, val_set, test, sub, feature_cols = load_and_process_data(train_file, test_file, sub_file)
-            if train_set is None:
-                st.error("Failed to process data. Please check the file format and try again.")
-            else:
-                st.session_state.train_set = train_set
-                st.session_state.val_set = val_set
-                st.session_state.test = test
-                st.session_state.sub = sub
-                st.session_state.feature_cols = feature_cols
-                
-                # Training logic for each model
-                for model_name in selected_models:
-                    st.write(f"Training {model_name}...")
-                    temp_dir = tempfile.gettempdir()
-                    
-                    if model_name == "XGBoost":
-                        X_train = train_set[feature_cols]
-                        y_train = train_set['sales']
-                        X_val = val_set[feature_cols]
-                        y_val = val_set['sales']
-                        model = xgb.XGBRegressor(n_estimators=100, learning_rate=0.1, max_depth=6, random_state=42)
-                        model.fit(X_train, y_train)
-                        y_pred = model.predict(X_val)
-                        actual = np.clip(y_val, 0, None)
-                        predicted = np.clip(y_pred, 0, None)
-                        metrics = {
-                            'rmsle': np.sqrt(mean_squared_error(np.log1p(actual), np.log1p(predicted))),
-                            'rmse': np.sqrt(mean_squared_error(actual, predicted)),
-                            'mae': mean_absolute_error(actual, predicted),
-                            'mape': mean_absolute_percentage_error(actual + 1e-10, predicted + 1e-10)
-                        }
-                        plt.figure(figsize=(10, 5))
-                        plt.plot(y_val.values[:100], label='Actual')
-                        plt.plot(y_pred[:100], label='Predicted')
-                        plt.title("XGBoost Predictions")
-                        plt.legend()
-                        plot_path = os.path.join(temp_dir, "xgb_pred.png")
-                        plt.savefig(plot_path)
-                        plt.close()
-                        st.session_state.model_results[model_name] = {
-                            'metrics': metrics,
-                            'plot_path': plot_path,
-                            'y_val': y_val.values,
-                            'y_pred': y_pred
-                        }
-                    
-                    elif model_name == "ARIMA":
-                        val_dates = pd.date_range('2017-07-16', '2017-08-15')
-                        val_steps = len(val_dates)
-                        arima_preds = {}
-                        for (store, family), group in train_set.groupby(['store_nbr', 'family']):
-                            model = auto_arima(group['sales'], seasonal=False, max_p=3, max_q=3, trace=False)
-                            arima_preds[(store, family)] = model.predict(val_steps)
-                        actuals = []
-                        preds = []
-                        for (store, family), group in val_set.groupby(['store_nbr', 'family']):
-                            actuals.extend(group['sales'].values)
-                            preds.extend(arima_preds[(store, family)])
-                        actual = np.clip(actuals, 0, None)
-                        predicted = np.clip(preds, 0, None)
-                        metrics = {
-                            'rmsle': np.sqrt(mean_squared_error(np.log1p(actual), np.log1p(predicted))),
-                            'rmse': np.sqrt(mean_squared_error(actual, predicted)),
-                            'mae': mean_absolute_error(actual, predicted),
-                            'mape': mean_absolute_percentage_error(actual + 1e-10, predicted + 1e-10)
-                        }
-                        plt.figure(figsize=(10, 5))
-                        plt.plot(actuals[:100], label='Actual')
-                        plt.plot(preds[:100], label='Predicted')
-                        plt.title("ARIMA Predictions")
-                        plt.legend()
-                        plot_path = os.path.join(temp_dir, "arima_pred.png")
-                        plt.savefig(plot_path)
-                        plt.close()
-                        st.session_state.model_results[model_name] = {
-                            'metrics': metrics,
-                            'plot_path': plot_path,
-                            'y_val': actuals,
-                            'y_pred': preds
-                        }
-                    
-                    elif model_name == "SARIMA":
-                        val_dates = pd.date_range('2017-07-16', '2017-08-15')
-                        val_steps = len(val_dates)
-                        sarima_preds = {}
-                        for (store, family), group in train_set.groupby(['store_nbr', 'family']):
-                            model = auto_arima(group['sales'], seasonal=True, m=7, max_p=3, max_q=3, trace=False)
-                            sarima_preds[(store, family)] = model.predict(val_steps)
-                        actuals = []
-                        preds = []
-                        for (store, family), group in val_set.groupby(['store_nbr', 'family']):
-                            actuals.extend(group['sales'].values)
-                            preds.extend(sarima_preds[(store, family)])
-                        actual = np.clip(actuals, 0, None)
-                        predicted = np.clip(preds, 0, None)
-                        metrics = {
-                            'rmsle': np.sqrt(mean_squared_error(np.log1p(actual), np.log1p(predicted))),
-                            'rmse': np.sqrt(mean_squared_error(actual, predicted)),
-                            'mae': mean_absolute_error(actual, predicted),
-                            'mape': mean_absolute_percentage_error(actual + 1e-10, predicted + 1e-10)
-                        }
-                        plt.figure(figsize=(10, 5))
-                        plt.plot(actuals[:100], label='Actual')
-                        plt.plot(preds[:100], label='Predicted')
-                        plt.title("SARIMA Predictions")
-                        plt.legend()
-                        plot_path = os.path.join(temp_dir, "sarima_pred.png")
-                        plt.savefig(plot_path)
-                        plt.close()
-                        st.session_state.model_results[model_name] = {
-                            'metrics': metrics,
-                            'plot_path': plot_path,
-                            'y_val': actuals,
-                            'y_pred': preds
-                        }
-                    
-                    elif model_name == "Prophet":
-                        val_dates = pd.date_range('2017-07-16', '2017-08-15')
-                        prophet_preds = {}
-                        for (store, family), group in train_set.groupby(['store_nbr', 'family']):
-                            df = group[['date', 'sales']].rename(columns={'date': 'ds', 'sales': 'y'})
-                            model = Prophet(yearly_seasonality=True, weekly_seasonality=True, daily_seasonality=True)
-                            model.fit(df)
-                            prophet_preds[(store, family)] = model.predict(pd.DataFrame({'ds': val_dates}))['yhat'].values
-                        actuals = []
-                        preds = []
-                        for (store, family), group in val_set.groupby(['store_nbr', 'family']):
-                            actuals.extend(group['sales'].values)
-                            preds.extend(prophet_preds[(store, family)])
-                        actual = np.clip(actuals, 0, None)
-                        predicted = np.clip(preds, 0, None)
-                        metrics = {
-                            'rmsle': np.sqrt(mean_squared_error(np.log1p(actual), np.log1p(predicted))),
-                            'rmse': np.sqrt(mean_squared_error(actual, predicted)),
-                            'mae': mean_absolute_error(actual, predicted),
-                            'mape': mean_absolute_percentage_error(actual + 1e-10, predicted + 1e-10)
-                        }
-                        plt.figure(figsize=(10, 5))
-                        plt.plot(actuals[:100], label='Actual')
-                        plt.plot(preds[:100], label='Predicted')
-                        plt.title("Prophet Predictions")
-                        plt.legend()
-                        plot_path = os.path.join(temp_dir, "prophet_pred.png")
-                        plt.savefig(plot_path)
-                        plt.close()
-                        st.session_state.model_results[model_name] = {
-                            'metrics': metrics,
-                            'plot_path': plot_path,
-                            'y_val': actuals,
-                            'y_pred': preds
-                        }
-                    
-                    elif model_name == "LSTM":
-                        seq_length = 7
-                        X_train = []
-                        y_train = []
-                        for _, g in train_set.groupby(['store_nbr', 'family']):
-                            g = g.sort_values('date')
-                            for i in range(len(g) - seq_length):
-                                X_train.append(g.iloc[i:i+seq_length][feature_cols].values)
-                                y_train.append(g.iloc[i+seq_length]['sales'])
-                        X_train = np.array(X_train)
-                        y_train = np.array(y_train)
-                        X_val = []
-                        y_val = []
-                        for _, g in val_set.groupby(['store_nbr', 'family']):
-                            g = g.sort_values('date')
-                            for i in range(len(g) - seq_length):
-                                X_val.append(g.iloc[i:i+seq_length][feature_cols].values)
-                                y_val.append(g.iloc[i+seq_length]['sales'])
-                        X_val = np.array(X_val)
-                        y_val = np.array(y_val)
-                        model = Sequential([LSTM(50, activation='relu', input_shape=(seq_length, len(feature_cols))), Dense(1)])
-                        model.compile(optimizer='adam', loss='mse')
-                        model.fit(X_train, y_train, epochs=5, batch_size=32, validation_data=(X_val, y_val), verbose=0)
-                        y_pred = model.predict(X_val, verbose=0).flatten()
-                        actual = np.clip(y_val, 0, None)
-                        predicted = np.clip(y_pred, 0, None)
-                        metrics = {
-                            'rmsle': np.sqrt(mean_squared_error(np.log1p(actual), np.log1p(predicted))),
-                            'rmse': np.sqrt(mean_squared_error(actual, predicted)),
-                            'mae': mean_absolute_error(actual, predicted),
-                            'mape': mean_absolute_percentage_error(actual + 1e-10, predicted + 1e-10)
-                        }
-                        plt.figure(figsize=(10, 5))
-                        plt.plot(y_val[:100], label='Actual')
-                        plt.plot(y_pred[:100], label='Predicted')
-                        plt.title("LSTM Predictions")
-                        plt.legend()
-                        plot_path = os.path.join(temp_dir, "lstm_pred.png")
-                        plt.savefig(plot_path)
-                        plt.close()
-                        st.session_state.model_results[model_name] = {
-                            'metrics': metrics,
-                            'plot_path': plot_path,
-                            'y_val': y_val,
-                            'y_pred': y_pred
-                        }
-                    
-                    # Display metrics
-                    st.write(f"### {model_name} Metrics")
-                    col1, col2, col3, col4 = st.columns(4)
-                    col1.metric("RMSLE", f"{metrics['rmsle']:.4f}")
-                    col2.metric("RMSE", f"{metrics['rmse']:.4f}")
-                    col3.metric("MAE", f"{metrics['mae']:.4f}")
-                    col4.metric("MAPE", f"{metrics['mape']:.4f}")
-                
-                # Display memory usage
-                mem = psutil.Process(os.getpid()).memory_info().rss / 1024**2
-                st.metric("Memory Usage (MB)", f"{mem:.2f}")
-                st.success("Training completed!")
-    elif train_button:
-        st.error("Please upload all CSV files and select at least one model.")
+    sub_file = st.file_uploader("Upload Submission CSV", type="csv#pragma once
 
-# Prediction Tab
-with prediction_tab:
-    st.header("Visualize Predictions vs Actual")
-    
-    # Check if data is loaded
-    if st.session_state.train_set is not None:
-        # Get store numbers and families
-        store_nbrs = sorted(st.session_state.train_set['store_nbr'].unique())
-        families = sorted(st.session_state.train_set['family'].unique())
-        
-        # User inputs
-        store_nbr = st.selectbox("Select Store Number", store_nbrs)
-        family = st.selectbox("Select Product Family", families)
-        selected_models = st.multiselect("Select Models to Visualize", models, default=["XGBoost"])
-        
-        st.divider()  # Separator between inputs and outputs
-        
-        if selected_models:
-            for model_name in selected_models:
-                st.subheader(f"{model_name} Predictions")
-                if model_name in st.session_state.model_results:
-                    result = st.session_state.model_results[model_name]
-                    metrics = result['metrics']
-                    plot_path = result['plot_path']
-                    
-                    # Filter predictions for selected store and family
-                    val_set = st.session_state.val_set
-                    mask = (val_set['store_nbr'] == store_nbr) & (val_set['family'] == family)
-                    if mask.sum() > 0:
-                        group = val_set[mask].sort_values('date')
-                        actual = group['sales'].values[:100]
-                        # For XGBoost and LSTM, predictions are aligned with val_set
-                        if model_name in ["XGBoost", "LSTM"]:
-                            pred = result['y_pred'][val_set.index[mask]][:100]
-                        # For ARIMA, SARIMA, Prophet, predictions are per group
-                        else:
-                            key = (store_nbr, family)
-                            if key in result['y_pred']:
-                                pred = result['y_pred'][key][:100]
-                            else:
-                                pred = None
-                        
-                        if pred is not None and len(pred) > 0:
-                            # Plot actual vs predicted
-                            plt.figure(figsize=(10, 5))
-                            plt.plot(actual, label='Actual', color='blue')
-                            plt.plot(pred, label='Predicted', color='orange')
-                            plt.title(f"{model_name} Predictions: Store {store_nbr}, Family {family}")
-                            plt.xlabel("Time")
-                            plt.ylabel("Sales")
-                            plt.legend()
-                            plot_path = os.path.join(tempfile.gettempdir(), f"{model_name.lower()}_custom_pred.png")
-                            plt.savefig(plot_path)
-                            plt.close()
-                            
-                            # Display plot
-                            if os.path.exists(plot_path):
-                                image = Image.open(plot_path)
-                                st.image(image, caption=f"{model_name} Predictions vs Actual", use_column_width=True)
-                            else:
-                                st.write("Plot not available.")
-                            
-                            # Display metrics
-                            st.write("### Metrics")
-                            col1, col2, col3, col4 = st.columns(4)
-                            col1.metric("RMSLE", f"{metrics['rmsle']:.4f}")
-                            col2.metric("RMSE", f"{metrics['rmse']:.4f}")
-                            col3.metric("MAE", f"{metrics['mae']:.4f}")
-                            col4.metric("MAPE", f"{metrics['mape']:.4f}")
-                        else:
-                            st.write("Predictions not available for this store-family combination.")
-                    else:
-                        st.write("No validation data for this store-family combination.")
-                else:
-                    st.write("Model not trained. Please train the model in the Training tab.")
-        else:
-            st.write("Please select at least one model to visualize.")
-    else:
-        st.write("Please upload data and train models in the Training tab.")
+# include <string>
+#include <vector>
+#include <map>
+#include <ctime>
+#include <memory>
+
+class TimeSeriesModel {
+public:
+    virtual ~TimeSeriesModel() = default;
+    virtual void fit(const std::vector<double>& data) = 0;
+    virtual std::vector<double> predict(int steps) const = 0;
+    virtual std::string getName() const = 0;
+};
+
+class NaiveForecast : public TimeSeriesModel {
+public:
+    void fit(const std::vector<double>& data) override;
+    std::vector<double> predict(int steps) const override;
+    std::string getName() const override { return "Naive"; }
+
+private:
+    double last_value = 0.0;
+};
+
+class SeasonalNaiveForecast : public TimeSeriesModel {
+public:
+    SeasonalNaiveForecast(int season_length = 7) : season_length(season_length) {}
+    void fit(const std::vector<double>& data) override;
+    std::vector<double> predict(int steps) const override;
+    std::string getName() const override { return "Seasonal Naive"; }
+
+private:
+    int season_length;
+    std::vector<double> last_season;
+};
+
+class ExponentialSmoothing : public TimeSeriesModel {
+public:
+    ExponentialSmoothing(double alpha = 0.3) : alpha(alpha) {}
+    void fit(const std::vector<double>& data) override;
+    std::vector<double> predict(int steps) const override;
+    std::string getName() const override { return "Exponential Smoothing"; }
+
+private:
+    double alpha;
+    double level = 0.0;
+};
+
+class HoltsLinearTrend : public TimeSeriesModel {
+public:
+    HoltsLinearTrend(double alpha = 0.3, double beta = 0.1) : alpha(alpha), beta(beta) {}
+    void fit(const std::vector<double>& data) override;
+    std::vector<double> predict(int steps) const override;
+    std::string getName() const override { return "Holt's Linear Trend"; }
+
+private:
+    double alpha, beta;
+    double level = 0.0, trend = 0.0;
+};
+
+class MovingAverageForecast : public TimeSeriesModel {
+public:
+    MovingAverageForecast(int window = 7) : window(window) {}
+    void fit(const std::vector<double>& data) override;
+    std::vector<double> predict(int steps) const override;
+    std::string getName() const override { return "Moving Average"; }
+
+private:
+    int window;
+    double last_average = 0.0;
+};
+
+class LinearRegressionTS : public TimeSeriesModel {
+public:
+    void fit(const std::vector<double>& data) override;
+    std::vector<double> predict(int steps) const override;
+    std::string getName() const override { return "Linear Regression"; }
+
+private:
+    std::vector<double> coefficients;
+    double intercept = 0.0;
+    std::vector<double> create_features(int index, int lag = 7) const;
+};
+
+class TimeSeriesForecaster {
+public:
+    TimeSeriesForecaster();
+    void addModel(std::unique_ptr<TimeSeriesModel> model);
+    void fitAll(const std::map<std::pair<int, std::string>, std::vector<double>>& data);
+    std::map<std::string, std::vector<double>> predictAll(const std::pair<int, std::string>& key, int steps) const;
+    std::vector<std::string> getModelNames() const;
+
+private:
+    std::vector<std::unique_ptr<TimeSeriesModel>> models;
+};
+
+#endif // TIME_SERIES_MODELS_H
