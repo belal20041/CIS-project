@@ -101,6 +101,9 @@ def load_and_process_data(train_file, test_file, date_col, target_col):
     store_family_counts = {}
     train_chunks = pd.read_csv(BytesIO(train_content), dtype=train_dtypes, chunksize=chunksize)
     for chunk in train_chunks:
+        # Drop Unnamed: 17 if present
+        if 'Unnamed: 17' in chunk.columns:
+            chunk = chunk.drop(columns=['Unnamed: 17'])
         if not pd.to_numeric(chunk[target_col], errors='coerce').notna().all():
             st.error(f"Target column '{target_col}' contains non-numeric values.")
             return None, None, None, None, None
@@ -112,6 +115,9 @@ def load_and_process_data(train_file, test_file, date_col, target_col):
     train_samples = []
     train_chunks = pd.read_csv(BytesIO(train_content), dtype=train_dtypes, chunksize=chunksize)
     for chunk in train_chunks:
+        # Drop Unnamed: 17 if present
+        if 'Unnamed: 17' in chunk.columns:
+            chunk = chunk.drop(columns=['Unnamed: 17'])
         sampled_chunk = chunk.groupby(['store_nbr', 'family']).apply(
             lambda x: x.sample(n=min(len(x), rows_per_pair), random_state=42)
         ).reset_index(drop=True)
@@ -124,6 +130,9 @@ def load_and_process_data(train_file, test_file, date_col, target_col):
     # Read test data
     try:
         test = pd.read_csv(BytesIO(test_content), dtype=test_dtypes)
+        # Drop Unnamed: 17 if present
+        if 'Unnamed: 17' in test.columns:
+            test = test.drop(columns=['Unnamed: 17'])
     except pd.errors.EmptyDataError:
         st.error("test.csv is empty or invalid.")
         return None, None, None, None, None
@@ -131,8 +140,11 @@ def load_and_process_data(train_file, test_file, date_col, target_col):
     # Validate and parse dates
     train[date_col] = pd.to_datetime(train[date_col], errors='coerce')
     test[date_col] = pd.to_datetime(test[date_col], errors='coerce')
-    if train[date_col].isna().any() or test[date_col].isna().any():
-        st.error(f"Invalid date formats in column '{date_col}'.")
+    if train[date_col].isna().any():
+        st.error(f"Invalid date formats in train.csv column '{date_col}'. Sample invalid values: {train[train[date_col].isna()][date_col].head().tolist()}")
+        return None, None, None, None, None
+    if test[date_col].isna().any():
+        st.error(f"Invalid date formats in test.csv column '{date_col}'. Sample invalid values: {test[test[date_col].isna()][date_col].head().tolist()}")
         return None, None, None, None, None
 
     # Feature engineering
@@ -141,7 +153,7 @@ def load_and_process_data(train_file, test_file, date_col, target_col):
         if col in train.columns and col in test.columns:
             means = train.groupby(group_col)[target_col].mean().to_dict()
             train[f'{col}_encoded'] = train[col].map(means).astype('float32')
-            test[f'{col}_encoded'] = test[col].map(means).fillna(0).astype('float32')
+            test[f'{col}_encoded'] = test[col].map(means).astype('float32').fillna(0)
 
     for df in [train, test]:
         df['month'] = df[date_col].dt.month.astype('int8')
@@ -285,14 +297,6 @@ def load_and_process_data(train_file, test_file, date_col, target_col):
     combined[feature_cols] = scaler.fit_transform(combined[feature_cols]).astype('float32')
 
     return combined, feature_cols, scaler, le_store, le_family
-
-def split_data(combined, date_col, target_col):
-    train = combined[combined['is_train'] == 1]
-    test = combined[combined['is_train'] == 0].drop([target_col], axis=1)
-    train_set = train[train[date_col] <= TRAIN_END]
-    val_set = train[(train[date_col] > TRAIN_END) & (train[date_col] <= VAL_END)]
-    return train_set, val_set, test
-
 # Modeling functions
 def train_model(model_name, train_set, val_set, feature_cols, date_col, target_col, max_groups, min_samples):
     temp_dir = tempfile.gettempdir()
