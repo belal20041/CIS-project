@@ -44,8 +44,9 @@ try:
     VAL_END = '2017-08-15'
     MAX_GROUPS = 50    # Store-family pairs
     MAX_MODELS = 1     # Limit to 1 model
-    MAX_TRAIN_ROWS = 150000  # Increased to handle 322K rows with sampling
+    MAX_TRAIN_ROWS = 150000  # Max train rows
     MAX_TEST_ROWS = 20000    # Test row limit
+    MIN_SAMPLES = 14         # Minimum samples for training
 
     # Training Tab
     with training_tab:
@@ -70,7 +71,9 @@ stores = train['store_nbr'].unique()
 families = train['family'].unique()
 sample_size = 150000
 rows_per_group = max(1, sample_size // (len(stores) * len(families)))
-sampled = train.groupby(['store_nbr', 'family']).apply(lambda x: x.tail(rows_per_group)).reset_index(drop=True)
+sampled = train.groupby(['store_nbr', 'family']).apply(
+    lambda x: x.sample(n=min(len(x), rows_per_group), random_state=42)
+).reset_index(drop=True)
 if len(sampled) > sample_size:
     sampled = sampled.sample(n=sample_size, random_state=42)
 
@@ -113,37 +116,42 @@ print(f"Saved train_subset.csv with {len(sampled)} rows")
                             train_dtypes = {'store_nbr': 'int32', 'family': 'category', 'sales': 'float32', 'onpromotion': 'int32'}
                             test_dtypes = {'store_nbr': 'int32', 'family': 'category', 'onpromotion': 'int32', 'id': 'int32'}
                             
-                            # Sample train.csv during chunked reading
+                            # Stratified sampling for train.csv
                             chunksize = 50000
                             target_rows = MAX_TRAIN_ROWS
                             train_chunks = pd.read_csv(train_file, usecols=train_cols, dtype=train_dtypes, chunksize=chunksize)
                             train_samples = []
                             total_rows = 0
-                            reservoir = []
                             
-                            # Reservoir sampling for proportional store-family representation
+                            # Count rows per store-family pair for proportional sampling
+                            store_family_counts = {}
                             for chunk in train_chunks:
                                 total_rows += len(chunk)
-                                if total_rows <= target_rows:
-                                    train_samples.append(chunk)
-                                else:
-                                    # Add chunk to reservoir and sample
-                                    reservoir.extend(chunk.to_dict('records'))
-                                    if len(reservoir) > target_rows:
-                                        reservoir = random.sample(reservoir, target_rows)
+                                for (store, family), group in chunk.groupby(['store_nbr', 'family']):
+                                    store_family_counts[(store, family)] = store_family_counts.get((store, family), 0) + len(group)
                             
-                            # Combine sampled chunks or reservoir
-                            if reservoir:
-                                train = pd.DataFrame(reservoir)
-                                logger.info(f"Sampled {len(train)} rows from {total_rows} using reservoir sampling")
+                            # Calculate rows per store-family pair
+                            num_pairs = len(store_family_counts)
+                            if num_pairs == 0:
+                                st.error("No store-family pairs found in train data.")
+                                logger.error("Empty store-family counts")
+                                st.stop()
+                            rows_per_pair = max(1, target_rows // num_pairs)
+                            
+                            # Sample proportionally
+                            train_chunks = pd.read_csv(train_file, usecols=train_cols, dtype=train_dtypes, chunksize=chunksize)
+                            for chunk in train_chunks:
+                                sampled_chunk = chunk.groupby(['store_nbr', 'family']).apply(
+                                    lambda x: x.sample(n=min(len(x), rows_per_pair), random_state=42)
+                                ).reset_index(drop=True)
+                                train_samples.append(sampled_chunk)
+                            
+                            train = pd.concat(train_samples, ignore_index=True)
+                            if len(train) > target_rows:
+                                train = train.sample(n=target_rows, random_state=42)
+                            logger.info(f"Sampled {len(train)} rows from {total_rows} using stratified sampling")
+                            if total_rows > MAX_TRAIN_ROWS:
                                 st.warning(f"Train data ({total_rows} rows) sampled to {len(train)} rows to fit cloud resources.")
-                            else:
-                                train = pd.concat(train_samples, ignore_index=True)
-                                logger.info(f"Loaded {len(train)} rows from {total_rows}")
-                                if total_rows > MAX_TRAIN_ROWS:
-                                    train = train.sample(n=MAX_TRAIN_ROWS, random_state=42)
-                                    logger.info(f"Further sampled to {len(train)} rows")
-                                    st.warning(f"Train data ({total_rows} rows) sampled to {len(train)} rows to fit cloud resources.")
                             
                             # Load test and submission CSVs
                             test = pd.read_csv(test_file, usecols=test_cols, dtype=test_dtypes)
@@ -262,12 +270,21 @@ print(f"Saved train_subset.csv with {len(sampled)} rows")
                         import tempfile
                         temp_dir = tempfile.gettempdir()
                         pred_dict = {}
+                        skipped_pairs = 0
                         
-                        # Limit store-family pairs
-                        group_iter = list(val_set.groupby(['store_nbr', 'family']))
+                        # Get store-family pairs present in train_set
+                        train_pairs = set(train_set[['store_nbr', 'family']].drop_duplicates().itertuples(index=False, name=None))
+                        
+                        # Limit store-family pairs and ensure they exist in train_set
+                        group_iter = [(pair, group) for pair, group in val_set.groupby(['store_nbr', 'family']) if pair in train_pairs]
                         if len(group_iter) > MAX_GROUPS:
                             group_iter = group_iter[:MAX_GROUPS]
                             logger.warning(f"Limited to {MAX_GROUPS} store-family pairs for {model_name}")
+                        
+                        if not group_iter:
+                            st.error("No valid store-family pairs found with sufficient training data.")
+                            logger.error("No valid store-family pairs")
+                            st.stop()
                         
                         for (store, family), group in group_iter:
                             train_group = train_set[(train_set['store_nbr'] == store) & (train_set['family'] == family)]
@@ -276,7 +293,7 @@ print(f"Saved train_subset.csv with {len(sampled)} rows")
                             actuals = val_group['sales'].values
                             preds = np.zeros(len(actuals))
                             
-                            if not train_group.empty and len(train_group) >= 14:
+                            if not train_group.empty and len(train_group) >= MIN_SAMPLES and train_group['sales'].var() > 0:
                                 try:
                                     if model_name == "ARIMA":
                                         from statsmodels.tsa.arima.model import ARIMA
@@ -339,7 +356,7 @@ print(f"Saved train_subset.csv with {len(sampled)} rows")
                                     elif model_name == "VAR":
                                         from statsmodels.tsa.vector_ar.var_model import VAR
                                         var_data = train_group[['sales', 'onpromotion']].dropna()
-                                        if len(var_data) >= 14:
+                                        if len(var_data) >= MIN_SAMPLES:
                                             model = VAR(var_data)
                                             fit = model.fit(maxlags=7)
                                             lag_order = fit.k_ar
@@ -348,9 +365,18 @@ print(f"Saved train_subset.csv with {len(sampled)} rows")
                                             preds = forecast[:, 0].clip(0)
                                 except Exception as e:
                                     logger.warning(f"Error training {model_name} for store {store}, family {family}: {str(e)}")
+                                    skipped_pairs += 1
+                            else:
+                                logger.warning(f"Skipping store {store}, family {family}: insufficient data (rows={len(train_group)}, variance={train_group['sales'].var() if not train_group.empty else 0})")
+                                skipped_pairs += 1
                             
                             preds = np.clip(preds, 0, None)
                             pred_dict[(store, family)] = {'dates': dates, 'actuals': actuals, 'preds': preds}
+                        
+                        # Log skipped pairs
+                        if skipped_pairs > 0:
+                            st.warning(f"Skipped {skipped_pairs} store-family pairs due to insufficient training data.")
+                            logger.info(f"Skipped {skipped_pairs} store-family pairs")
                         
                         # Aggregate metrics
                         from sklearn.metrics import mean_squared_error, mean_absolute_error
@@ -359,6 +385,11 @@ print(f"Saved train_subset.csv with {len(sampled)} rows")
                         for key, data in pred_dict.items():
                             all_actuals.extend(data['actuals'])
                             all_preds.extend(data['preds'])
+                        
+                        if not all_actuals:
+                            st.error("No predictions generated due to insufficient training data for all store-family pairs.")
+                            logger.error("No valid predictions generated")
+                            st.stop()
                         
                         metrics = {
                             'rmsle': np.sqrt(mean_squared_error(np.log1p(all_actuals), np.log1p(all_preds))),
@@ -545,7 +576,7 @@ print(f"Saved train_subset.csv with {len(sampled)} rows")
                                     else:
                                         spec_df['predicted_sales'] = np.zeros(len(spec_df))
                                 else:
-                                    if not train_group.empty and len(train_group) >= 14:
+                                    if not train_group.empty and len(train_group) >= MIN_SAMPLES and train_group['sales'].var() > 0:
                                         if model_name == "ARIMA":
                                             from statsmodels.tsa.arima.model import ARIMA
                                             model = ARIMA(train_group['sales'], order=(3,1,0))
@@ -582,7 +613,7 @@ print(f"Saved train_subset.csv with {len(sampled)} rows")
                                         elif model_name == "VAR":
                                             from statsmodels.tsa.vector_ar.var_model import VAR
                                             var_data = train_group[['sales', 'onpromotion']].dropna()
-                                            if len(var_data) >= 14:
+                                            if len(var_data) >= MIN_SAMPLES:
                                                 model = VAR(var_data)
                                                 fit = model.fit(maxlags=7)
                                                 lag_order = fit.k_ar
@@ -593,6 +624,7 @@ print(f"Saved train_subset.csv with {len(sampled)} rows")
                                                 predictions = np.zeros(len(spec_df))
                                     else:
                                         predictions = np.zeros(len(spec_df))
+                                        logger.warning(f"Insufficient data for store {store_nbr}, family {family} in specific prediction")
                                     spec_df['predicted_sales'] = np.clip(predictions, 0, None)
                                 
                                 if time_granularity == "Day":
@@ -701,7 +733,7 @@ print(f"Saved train_subset.csv with {len(sampled)} rows")
                                     else:
                                         forecast_df['predicted_sales'] = np.zeros(len(forecast_df))
                                 else:
-                                    if not train_group.empty and len(train_group) >= 14:
+                                    if not train_group.empty and len(train_group) >= MIN_SAMPLES and train_group['sales'].var() > 0:
                                         if model_name == "ARIMA":
                                             from statsmodels.tsa.arima.model import ARIMA
                                             model = ARIMA(train_group['sales'], order=(3,1,0))
@@ -738,7 +770,7 @@ print(f"Saved train_subset.csv with {len(sampled)} rows")
                                         elif model_name == "VAR":
                                             from statsmodels.tsa.vector_ar.var_model import VAR
                                             var_data = train_group[['sales', 'onpromotion']].dropna()
-                                            if len(var_data) >= 14:
+                                            if len(var_data) >= MIN_SAMPLES:
                                                 model = VAR(var_data)
                                                 fit = model.fit(maxlags=7)
                                                 lag_order = fit.k_ar
@@ -749,6 +781,7 @@ print(f"Saved train_subset.csv with {len(sampled)} rows")
                                                 predictions = np.zeros(len(forecast_df))
                                     else:
                                         predictions = np.zeros(len(forecast_df))
+                                        logger.warning(f"Insufficient data for store {store_nbr}, family {family} in forecasting")
                                     forecast_df['predicted_sales'] = np.clip(predictions, 0, None)
                                 
                                 if time_granularity == "Day":
