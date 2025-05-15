@@ -14,7 +14,7 @@ from xgboost import XGBRegressor
 from lightgbm import LGBMRegressor
 from tbats import TBATS
 from statsmodels.tsa.holtwinters import ExponentialSmoothing
-from statsforecast.models import Theta, STL
+from statsforecast import Theta, STL
 import tensorflow as tf
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, GRU, Dense
