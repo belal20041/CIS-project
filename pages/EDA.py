@@ -29,7 +29,7 @@ def detect_column_types(df, date_col):
 
 def load_data(file, date_col, target_col):
     if hasattr(file, 'seek'):
-        file.seek(0)  # Rewind file buffer to ensure proper reading
+        file.seek(0)  # Rewind file buffer
     df = pd.read_csv(file)
     df[date_col] = pd.to_datetime(df[date_col])
     df[['store_nbr', 'onpromotion']] = df[['store_nbr', 'onpromotion']].astype('int32')
@@ -218,12 +218,11 @@ def main():
     with train_tab:
         train_file = st.file_uploader("Train Data", ['csv'], key="train")
         if train_file:
-            # Reset train configuration when a new file is uploaded
             if 'train_file' in st.session_state and st.session_state['train_file'] != train_file:
                 for key in ['train_date_col', 'train_target_col', 'train_numeric_cols', 'train_categorical_cols', 'train_outlier_method', 'train_scale', 'train_configured', 'train_df']:
                     st.session_state.pop(key, None)
             with st.form("train_config"):
-                train = load_data(train_file, 'date', None)  # Temporary load for preview
+                train = load_data(train_file, 'date', None)
                 st.dataframe(train.head(), height=100)
                 date_col = st.selectbox("Date", train.columns, index=train.columns.tolist().index('date') if 'date' in train.columns else 0, key="train_date")
                 target_col = st.selectbox("Target", train.columns, key="train_target")
@@ -247,18 +246,17 @@ def main():
                         explore_data(train, st.session_state['train_date_col'], st.session_state['train_target_col'], 
                                      st.session_state['train_numeric_cols'], st.session_state['train_categorical_cols'], "train")
                         st.dataframe(train.head(), height=100)
-                        csv_data, mime = get_download_file(train, "train_processed.csv")
-                        st.download_button("Download Train", csv_data, "train_processed.csv", mime, key="train_download")
+                csv_data, mime = get_download_file(train, "train_processed.csv")
+                st.download_button("Download Train", csv_data, "train_processed.csv", mime, key="train_download")
 
     with test_tab:
         test_file = st.file_uploader("Test Data", ['csv'], key="test")
         if test_file:
-            # Reset test configuration when a new file is uploaded
             if 'test_file' in st.session_state and st.session_state['test_file'] != test_file:
                 for key in ['test_date_col', 'test_numeric_cols', 'test_categorical_cols', 'test_outlier_method', 'test_scale', 'test_configured', 'test_df']:
                     st.session_state.pop(key, None)
             with st.form("test_config"):
-                test = load_data(test_file, 'date', None)  # Temporary load for preview
+                test = load_data(test_file, 'date', None)
                 st.dataframe(test.head(), height=100)
                 date_col = st.selectbox("Date", test.columns, index=test.columns.tolist().index('date') if 'date' in test.columns else 0, key="test_date")
                 numeric_cols, categorical_cols = detect_column_types(test, date_col)
@@ -280,8 +278,8 @@ def main():
                         explore_data(test, st.session_state['test_date_col'], st.session_state.get('train_target_col', None), 
                                      st.session_state['test_numeric_cols'], st.session_state['test_categorical_cols'], "test")
                         st.dataframe(test.head(), height=100)
-                        csv_data, mime = get_download_file(test, "test_processed.csv")
-                        st.download_button("Download Test", csv_data, "test_processed.csv", mime, key="test_download")
+                csv_data, mime = get_download_file(test, "test_processed.csv")
+                st.download_button("Download Test", csv_data, "test_processed.csv", mime, key="test_download")
 
     if 'train_df' in st.session_state and 'test_df' in st.session_state:
         with st.form("feature_engineering"):
