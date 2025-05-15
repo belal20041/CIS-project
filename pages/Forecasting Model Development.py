@@ -134,6 +134,14 @@ with training_tab:
                 actuals = []
                 preds = []
                 
+                # Initialize model_results for the model
+                st.session_state.model_results[model_name] = {
+                    'metrics': None,
+                    'plot_path': None,
+                    'y_val': None,
+                    'y_pred': None
+                }
+                
                 if model_name in ["Naive", "Seasonal Naive", "Moving Average"]:
                     for (store, family), group in val_set.groupby(['store_nbr', 'family']):
                         train_group = train_set[(train_set['store_nbr'] == store) & (train_set['family'] == family)]
@@ -166,13 +174,11 @@ with training_tab:
                     # Save model weights as model.pt
                     model_path = os.path.join(temp_dir, "model.pt")
                     joblib.dump(model, model_path)
-                    st.session_state.model_results[model_name] = {
-                        'metrics': None,
-                        'plot_path': None,
-                        'y_val': actuals,
-                        'y_pred': pred_dict,
-                        'model_path': model_path
-                    }
+                    st.session_state.model_results[model_name]['model_path'] = model_path
+                
+                # Update model_results
+                st.session_state.model_results[model_name]['y_val'] = actuals
+                st.session_state.model_results[model_name]['y_pred'] = pred_dict
                 
                 # Compute metrics
                 actual = np.clip(actuals, 0, None)
@@ -259,9 +265,8 @@ with prediction_tab:
                             plt.close()
                             
                             # Display plot
-                            if os.path.exists(plot_path):
-                                image = Image.open(plot_path)
-                                st.image(image, caption=f"{model_name} Predictions vs Actual", use_column_width=True)
+                            image = Image.open(plot_path)
+                            st.image(image, caption=f"{model_name} Predictions vs Actual", use_column_width=True)
                             
                             # Display metrics
                             st.write("### Metrics")
