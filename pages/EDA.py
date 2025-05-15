@@ -19,6 +19,7 @@ def load_data(file_path, date_col, target_col):
     return df
 
 def plot_sales_trends(df, date_col, target_col, granularity='D'):
+    df[date_col] = pd.to_datetime(df[date_col])  # Ensure date_col is datetime
     sales = df.groupby(pd.Grouper(key=date_col, freq=granularity))[target_col].sum().reset_index()
     fig = px.line(sales, x=date_col, y=target_col, title=f"Sales Trends ({granularity})")
     fig.update_layout(xaxis_tickangle=45, yaxis_gridcolor='lightgray')
