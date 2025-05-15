@@ -38,13 +38,18 @@ def detect_column_types(df, date_col):
 
 @st.cache_data
 def load_data(file_content, file_hash, date_col, target_col):
-    df = pd.read_csv(BytesIO(file_content))
-    df[date_col] = pd.to_datetime(df[date_col], errors='coerce')
-    df[['store_nbr', 'onpromotion']] = df[['store_nbr', 'onpromotion']].astype('int32')
-    if target_col and target_col in df.columns:
-        df[target_col] = pd.to_numeric(df[target_col], errors='coerce').astype('float32')
-    df.dropna(subset=[date_col], inplace=True)
-    return df
+    if not file_content or len(file_content) == 0:
+        raise ValueError("The uploaded file is empty or contains no data.")
+    try:
+        df = pd.read_csv(BytesIO(file_content))
+        df[date_col] = pd.to_datetime(df[date_col], errors='coerce')
+        df[['store_nbr', 'onpromotion']] = df[['store_nbr', 'onpromotion']].astype('int32')
+        if target_col and target_col in df.columns:
+            df[target_col] = pd.to_numeric(df[target_col], errors='coerce').astype('float32')
+        df.dropna(subset=[date_col], inplace=True)
+        return df
+    except pd.errors.ParserError as e:
+        raise ValueError(f"Error parsing the file: {str(e)}. Please ensure it is a valid CSV file.")
 
 @st.cache_data
 def prepare_data(train, test, date_col, target_col):
@@ -136,27 +141,21 @@ def plot_missingness(df):
 
 @st.cache_data
 def plot_sales_trends(df, date_col, granularity='D', family_filter=None, date_range=None):
-    # Filter by family if specified
     if family_filter:
         df = df[df['family'] == family_filter]
     
-    # Filter by date range if specified
     if date_range:
         start_date, end_date = date_range
         df = df[(df[date_col] >= start_date) & (df[date_col] <= end_date)]
     
-    # Group by the specified granularity
     sales_by_date = df.groupby(pd.Grouper(key=date_col, freq=granularity))['sales'].sum().reset_index()
     fig = px.line(sales_by_date, x=date_col, y='sales', title=f"Total Sales Trends ({granularity}ly)",
                   labels={'sales': 'Total Sales', date_col: 'Date'}, color_discrete_sequence=['blue'])
     
-    # Ensure x-axis is treated as datetime
     fig.update_xaxes(type='date')
     
-    # Add vertical lines for holidays
     holidays = df[df['type_y'] == 'Holiday'][date_col].unique()
     for holiday in holidays:
-        # Keep holiday as a Timestamp object to match the datetime x-axis
         fig.add_vline(x=holiday, line=dict(color="red", dash="dash"), annotation_text="Holiday", annotation_position="top")
     
     fig.update_layout(xaxis=dict(tickangle=45), yaxis_gridcolor='lightgray')
@@ -370,6 +369,7 @@ def main():
                     st.session_state.pop(key, None)
             with st.form("train_config"):
                 # Read file content and hash for caching
+                train_file.seek(0)  # Ensure file pointer is at the beginning
                 train_file_content = train_file.read()
                 train_file.seek(0)  # Reset file pointer after reading
                 train_file_hash = hash_file(train_file)
@@ -390,6 +390,7 @@ def main():
                 }))
 
             if 'train_configured' in st.session_state and st.session_state['train_configured'] and 'train_file' in st.session_state:
+                train_file.seek(0)  # Ensure file pointer is at the beginning
                 train = load_data(st.session_state['train_file'].read(), st.session_state['train_file_hash'], st.session_state['train_date_col'], st.session_state['train_target_col'])
                 st.session_state['train_df'] = train
                 st.dataframe(train.head(), height=100)
@@ -501,6 +502,7 @@ def main():
                     st.session_state.pop(key, None)
             with st.form("test_config"):
                 # Read file content and hash for caching
+                test_file.seek(0)  # Ensure file pointer is at the beginning
                 test_file_content = test_file.read()
                 test_file.seek(0)  # Reset file pointer after reading
                 test_file_hash = hash_file(test_file)
@@ -520,6 +522,7 @@ def main():
                 }))
 
             if 'test_configured' in st.session_state and st.session_state['test_configured'] and 'test_file' in st.session_state:
+                test_file.seek(0)  # Ensure file pointer is at the beginning
                 test = load_data(st.session_state['test_file'].read(), st.session_state['test_file_hash'], st.session_state['test_date_col'], None)
                 st.session_state['test_df'] = test
                 st.dataframe(test.head(), height=100)
