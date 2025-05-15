@@ -16,3 +16,4 @@ missingno
 plotly
 lightgbm
 tbats
+statsforecast
