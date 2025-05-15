@@ -44,37 +44,77 @@ with training_tab:
     if train_button and train_file and test_file and sub_file and selected_models:
         with st.spinner("Processing data..."):
             def load_and_process_data(train_file, test_file, sub_file):
+                # Validate file uploads
+                if not all([train_file, test_file, sub_file]):
+                    st.error("Please upload all required CSV files (train.csv, test.csv, sample_submission.csv).")
+                    st.stop()
+                
                 train_dtypes = {'store_nbr': 'int32', 'family': 'category', 'sales': 'float32', 'onpromotion': 'int32'}
                 test_dtypes = {'store_nbr': 'int32', 'family': 'category', 'onpromotion': 'int32', 'id': 'int32'}
                 
                 chunksize = 50000
                 target_rows = MAX_TRAIN_ROWS
-                train_chunks = pd.read_csv(train_file, dtype=train_dtypes, chunksize=chunksize)
                 train_samples = []
                 total_rows = 0
                 
-                store_family_counts = {}
-                for chunk in train_chunks:
-                    total_rows += len(chunk)
-                    for (store, family), group in chunk.groupby(['store_nbr', 'family']):
-                        store_family_counts[(store, family)] = store_family_counts.get((store, family), 0) + len(group)
+                # Read train.csv in chunks
+                try:
+                    train_chunks = pd.read_csv(train_file, dtype=train_dtypes, chunksize=chunksize)
+                    store_family_counts = {}
+                    for chunk in train_chunks:
+                        total_rows += len(chunk)
+                        for (store, family), group in chunk.groupby(['store_nbr', 'family']):
+                            store_family_counts[(store, family)] = store_family_counts.get((store, family), 0) + len(group)
+                except pd.errors.EmptyDataError:
+                    st.error("train.csv is empty or contains no valid data. Please upload a valid train.csv with data rows.")
+                    st.stop()
+                except Exception as e:
+                    st.error(f"Failed to read train.csv: {str(e)}. Please ensure it's a valid CSV file.")
+                    st.stop()
                 
                 num_pairs = len(store_family_counts)
+                if num_pairs == 0:
+                    st.error("No store-family pairs found in train.csv. Please upload a valid train.csv.")
+                    st.stop()
                 rows_per_pair = max(1, target_rows // num_pairs)
                 
-                train_chunks = pd.read_csv(train_file, dtype=train_dtypes, chunksize=chunksize)
-                for chunk in train_chunks:
-                    sampled_chunk = chunk.groupby(['store_nbr', 'family']).apply(
-                        lambda x: x.sample(n=min(len(x), rows_per_pair), random_state=42)
-                    ).reset_index(drop=True)
-                    train_samples.append(sampled_chunk)
+                # Sample train.csv
+                try:
+                    train_chunks = pd.read_csv(train_file, dtype=train_dtypes, chunksize=chunksize)
+                    for chunk in train_chunks:
+                        sampled_chunk = chunk.groupby(['store_nbr', 'family']).apply(
+                            lambda x: x.sample(n=min(len(x), rows_per_pair), random_state=42)
+                        ).reset_index(drop=True)
+                        train_samples.append(sampled_chunk)
+                except pd.errors.EmptyDataError:
+                    st.error("train.csv is empty or contains no valid data during sampling. Please upload a valid train.csv.")
+                    st.stop()
+                except Exception as e:
+                    st.error(f"Failed to sample train.csv: {str(e)}. Please ensure it's a valid CSV file.")
+                    st.stop()
                 
                 train = pd.concat(train_samples, ignore_index=True)
                 if len(train) > target_rows:
                     train = train.sample(n=target_rows, random_state=42)
                 
-                test = pd.read_csv(test_file, dtype=test_dtypes)
-                sub = pd.read_csv(sub_file, dtype={'id': 'int32', 'sales': 'float32'})
+                # Read test.csv and sample_submission.csv
+                try:
+                    test = pd.read_csv(test_file, dtype=test_dtypes)
+                except pd.errors.EmptyDataError:
+                    st.error("test.csv is empty or contains no valid data. Please upload a valid test.csv.")
+                    st.stop()
+                except Exception as e:
+                    st.error(f"Failed to read test.csv: {str(e)}. Please ensure it's a valid CSV file.")
+                    st.stop()
+                
+                try:
+                    sub = pd.read_csv(sub_file, dtype={'id': 'int32', 'sales': 'float32'})
+                except pd.errors.EmptyDataError:
+                    st.error("sample_submission.csv is empty or contains no valid data. Please upload a valid sample_submission.csv.")
+                    st.stop()
+                except Exception as e:
+                    st.error(f"Failed to read sample_submission.csv: {str(e)}. Please ensure it's a valid CSV file.")
+                    st.stop()
                 
                 train['date'] = pd.to_datetime(train['date'], dayfirst=True)
                 test['date'] = pd.to_datetime(test['date'], dayfirst=True)
