@@ -20,7 +20,89 @@ if 'initialized' not in st.session_state:
     st.session_state.scaler = None
     st.session_state.le_store = None
     st.session_state.le_family = None
-
+def load_and_process_data(train_file, test_file, sub_file):
+    train_dtypes = {'store_nbr': 'int32', 'family': 'category', 'sales': 'float32', 'onpromotion': 'int32'}
+    test_dtypes = {'store_nbr': 'int32', 'family': 'category', 'onpromotion': 'int32', 'id': 'int32'}
+    
+    chunksize = 50000
+    target_rows = MAX_TRAIN_ROWS
+    train_samples = []
+    total_rows = 0
+    
+    # Read train.csv in chunks
+    train_chunks = pd.read_csv(train_file, dtype=train_dtypes, chunksize=chunksize)
+    store_family_counts = {}
+    for chunk in train_chunks:
+        total_rows += len(chunk)
+        for (store, family), group in chunk.groupby(['store_nbr', 'family']):
+            store_family_counts[(store, family)] = store_family_counts.get((store, family), 0) + len(group)
+    
+    num_pairs = len(store_family_counts)
+    rows_per_pair = max(1, target_rows // num_pairs)
+    
+    # Sample train.csv
+    train_chunks = pd.read_csv(train_file, dtype=train_dtypes, chunksize=chunksize)
+    for chunk in train_chunks:
+        sampled_chunk = chunk.groupby(['store_nbr', 'family']).apply(
+            lambda x: x.sample(n=min(len(x), rows_per_pair), random_state=42)
+        ).reset_index(drop=True)
+        train_samples.append(sampled_chunk)
+    
+    train = pd.concat(train_samples, ignore_index=True)
+    if len(train) > target_rows:
+        train = train.sample(n=target_rows, random_state=42)
+    
+    # Read test.csv and sample_submission.csv
+    test = pd.read_csv(test_file, dtype=test_dtypes)
+    sub = pd.read_csv(sub_file, dtype={'id': 'int32', 'sales': 'float32'})
+    
+    train['date'] = pd.to_datetime(train['date'], dayfirst=True)
+    test['date'] = pd.to_datetime(test['date'], dayfirst=True)
+    
+    train['is_train'] = 1
+    test['is_train'] = 0
+    combined = pd.concat([train, test]).sort_values(['store_nbr', 'family', 'date'])
+    agg_dict = {'sales': 'mean', 'onpromotion': 'sum', 'is_train': 'first', 'id': 'first'}
+    combined = combined.groupby(['store_nbr', 'family', 'date']).agg(agg_dict).reset_index()
+    combined = combined.astype({'store_nbr': 'int32', 'family': 'category', 'date': 'datetime64[ns]', 
+                               'sales': 'float32', 'onpromotion': 'int32', 'is_train': 'int8'})
+    
+    store_families = combined[['store_nbr', 'family']].drop_duplicates()
+    if len(store_families) > MAX_GROUPS:
+        store_families = store_families.sample(n=MAX_GROUPS, random_state=42)
+        combined = combined.merge(store_families, on=['store_nbr', 'family'])
+    
+    date_range = pd.date_range(start=combined['date'].min(), end=combined['date'].max(), freq='D')
+    index = pd.MultiIndex.from_product([store_families['store_nbr'], store_families['family'], date_range], 
+                                       names=['store_nbr', 'family', 'date'])
+    combined = combined.set_index(['store_nbr', 'family', 'date']).reindex(index).reset_index()
+    combined['sales'] = combined['sales'].fillna(0).astype('float32')
+    combined['onpromotion'] = combined['onpromotion'].fillna(0).astype('int32')
+    combined['is_train'] = combined['is_train'].fillna(0).astype('int8')
+    
+    combined['day'] = combined['date'].dt.day.astype('int8')
+    combined['dow'] = combined['date'].dt.dayofweek.astype('int8')
+    combined['month'] = combined['date'].dt.month.astype('int8')
+    combined['lag_7'] = combined.groupby(['store_nbr', 'family'])['sales'].shift(7).fillna(0).astype('float32')
+    
+    from sklearn.preprocessing import LabelEncoder
+    le_store = LabelEncoder()
+    le_family = LabelEncoder()
+    combined['store_nbr_encoded'] = le_store.fit_transform(combined['store_nbr']).astype('int8')
+    combined['family_encoded'] = le_family.fit_transform(combined['family']).astype('int8')
+    
+    feature_cols = ['onpromotion', 'day', 'dow', 'month', 'store_nbr_encoded', 'family_encoded', 'lag_7']
+    
+    from sklearn.preprocessing import StandardScaler
+    scaler = StandardScaler()
+    combined[feature_cols] = scaler.fit_transform(combined[feature_cols]).astype('float32')
+    
+    train = combined[combined['is_train'] == 1]
+    test = combined[combined['is_train'] == 0].drop(['sales'], axis=1)
+    train_set = train[train['date'] <= TRAIN_END]
+    val_set = train[(train['date'] > TRAIN_END) & (train['date'] <= VAL_END)]
+    
+    return train_set, val_set, test, sub, feature_cols, scaler, le_store, le_family
 training_tab, prediction_tab, specific_prediction_tab, forecasting_tab = st.tabs(["Training", "Prediction", "Specific Date Prediction", "Forecasting"])
 
 TRAIN_END = '2017-07-15'
