@@ -20,8 +20,10 @@ def load_data(file_path, date_col, target_col):
 
 def plot_sales_trends(df, date_col, target_col, granularity='D'):
     df[date_col] = pd.to_datetime(df[date_col])  # Ensure date_col is datetime
-    df.set_index(date_col, inplace=True)
-    sales = df[target_col].resample(granularity).sum().reset_index()
+    sales_df = df[[target_col]].copy()  # Select target_col before setting index
+    sales_df[date_col] = df[date_col]  # Retain date_col for reset_index
+    sales_df.set_index(date_col, inplace=True)
+    sales = sales_df.resample(granularity).sum().reset_index()
     fig = px.line(sales, x=date_col, y=target_col, title=f"Sales Trends ({granularity})")
     fig.update_layout(xaxis_tickangle=45, yaxis_gridcolor='lightgray')
     return fig
