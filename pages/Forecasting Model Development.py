@@ -7,14 +7,15 @@ import tempfile
 from PIL import Image
 from sklearn.preprocessing import StandardScaler, LabelEncoder
 from sklearn.metrics import mean_squared_error, mean_absolute_error
+from sklearn.ensemble import RandomForestRegressor
 from statsmodels.tsa.arima.model import ARIMA
 from statsmodels.tsa.statespace.sarimax import SARIMAX
+from statsmodels.tsa.vector_ar.var_model import VAR
 from prophet import Prophet
 from xgboost import XGBRegressor
 from lightgbm import LGBMRegressor
 from tbats import TBATS
 from statsmodels.tsa.holtwinters import ExponentialSmoothing
-from statsforecast.models import Theta, STL
 import tensorflow as tf
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, GRU, Dense
@@ -105,11 +106,12 @@ def load_and_process_data(train_file, test_file, sub_file):
     combined['year'] = combined['date'].dt.year.astype('int16')
     combined['sin_month'] = np.sin(2 * np.pi * combined['month'] / 12).astype('float32')
     combined['cos_month'] = np.cos(2 * np.pi * combined['month'] / 12).astype('float32')
-    lags = [7, 14, 28]
+    lags = [7, 14, 28, 56]
     for lag in lags:
         combined[f'lag_{lag}'] = combined.groupby(['store_nbr', 'family'])['sales'].shift(lag).fillna(0).astype('float32')
     combined['roll_mean_7'] = combined.groupby(['store_nbr', 'family'])['sales'].shift(1).rolling(7, min_periods=1).mean().fillna(0).astype('float32')
     combined['roll_std_7'] = combined.groupby(['store_nbr', 'family'])['sales'].shift(1).rolling(7, min_periods=1).std().fillna(0).astype('float32')
+    combined['roll_mean_14'] = combined.groupby(['store_nbr', 'family'])['sales'].shift(1).rolling(14, min_periods=1).mean().fillna(0).astype('float32')
     
     # Encode categorical variables
     le_store = LabelEncoder()
@@ -119,8 +121,8 @@ def load_and_process_data(train_file, test_file, sub_file):
     
     # Define features
     feature_cols = ['onpromotion', 'day', 'dow', 'month', 'year', 'sin_month', 'cos_month', 
-                    'store_nbr_encoded', 'family_encoded', 'lag_7', 'lag_14', 'lag_28', 
-                    'roll_mean_7', 'roll_std_7']
+                    'store_nbr_encoded', 'family_encoded', 'lag_7', 'lag_14', 'lag_28', 'lag_56', 
+                    'roll_mean_7', 'roll_std_7', 'roll_mean_14']
     
     # Scale features
     scaler = StandardScaler()
@@ -155,7 +157,7 @@ with training_tab:
     
     # Model selection
     models = ["ARIMA", "SARIMA", "Prophet", "XGBoost", "LightGBM", "LSTM", "GRU", 
-              "ETS", "TBATS", "Holt-Winters", "Theta", "STL"]
+              "ETS", "TBATS", "Holt-Winters", "VAR", "Random Forest"]
     selected_models = st.multiselect("Select Models to Train", models, default=["ARIMA"])
     
     # Train button
@@ -167,6 +169,10 @@ with training_tab:
         with st.spinner("Processing data..."):
             # Load and process data
             train_set, val_set, test, sub, feature_cols, scaler, le_store, le_family = load_and_process_data(train_file, test_file, sub_file)
+            if train_set.empty or val_set.empty or test.empty or sub.empty:
+                st.error("One or more uploaded files are empty or invalid.")
+                st.stop()
+            
             st.session_state.train_set = train_set
             st.session_state.val_set = val_set
             st.session_state.test = test
@@ -189,7 +195,7 @@ with training_tab:
                     actuals = val_group['sales'].values
                     preds = np.zeros(len(actuals))
                     
-                    if not train_group.empty and len(train_group) >= 7:
+                    if not train_group.empty and len(train_group) >= 14:
                         if model_name == "ARIMA":
                             model = ARIMA(train_group['sales'], order=(5,1,0))
                             fit = model.fit()
@@ -208,16 +214,19 @@ with training_tab:
                             forecast = model.predict(future)
                             preds = forecast['yhat'].values
                         
-                        elif model_name in ["XGBoost", "LightGBM"]:
+                        elif model_name in ["XGBoost", "LightGBM", "Random Forest"]:
                             X_train = train_group[feature_cols]
-                            y_train = train_group['sales']
+                            y_train = np.log1p(train_group['sales'].clip(0))
                             X_val = val_group[feature_cols]
                             if model_name == "XGBoost":
                                 model = XGBRegressor(n_estimators=100, learning_rate=0.1)
-                            else:
+                            elif model_name == "LightGBM":
                                 model = LGBMRegressor(n_estimators=100, learning_rate=0.1)
+                            else:
+                                model = RandomForestRegressor(n_estimators=100, random_state=42)
                             model.fit(X_train, y_train)
-                            preds = model.predict(X_val)
+                            preds_log = model.predict(X_val)
+                            preds = np.expm1(preds_log).clip(0)
                             joblib.dump(model, os.path.join(temp_dir, f"{model_name.lower()}_{store}_{family}.pt"))
                         
                         elif model_name in ["LSTM", "GRU"]:
@@ -237,7 +246,7 @@ with training_tab:
                                     preds.append(pred)
                                     last_seq = np.roll(last_seq, -1)
                                     last_seq[0, -1, 0] = pred
-                                preds = np.array(preds)
+                                preds = np.array(preds).clip(0)
                                 model.save(os.path.join(temp_dir, f"{model_name.lower()}_{store}_{family}.pt"))
                         
                         elif model_name == "ETS":
@@ -255,15 +264,15 @@ with training_tab:
                             fit = model.fit()
                             preds = fit.forecast(steps=len(actuals))
                         
-                        elif model_name == "Theta":
-                            model = Theta(seasonality_period=7)
-                            fit = model.fit(y=train_group['sales'].values)
-                            preds = fit.forecast(h=len(actuals))['mean']
-                        
-                        elif model_name == "STL":
-                            model = STL(seasonality_period=7)
-                            fit = model.fit(y=train_group['sales'].values)
-                            preds = fit.forecast(h=len(actuals))['mean']
+                        elif model_name == "VAR":
+                            var_data = train_group[['sales', 'onpromotion']].dropna()
+                            if len(var_data) >= 14:
+                                model = VAR(var_data)
+                                fit = model.fit(maxlags=7)
+                                lag_order = fit.k_ar
+                                last_obs = var_data.values[-lag_order:]
+                                forecast = fit.forecast(last_obs, steps=len(actuals))
+                                preds = forecast[:, 0].clip(0)
                     
                     preds = np.clip(preds, 0, None)
                     pred_dict[(store, family)] = {'dates': dates, 'actuals': actuals, 'preds': preds}
@@ -283,9 +292,10 @@ with training_tab:
                 }
                 
                 # Plot aggregate predictions
+                n_plot = min(100, len(all_actuals))
                 plt.figure(figsize=(10, 5))
-                plt.plot(dates[:100], all_actuals[:100], label='Actual')
-                plt.plot(dates[:100], all_preds[:100], label='Predicted')
+                plt.plot(dates[:n_plot], all_actuals[:n_plot], label='Actual')
+                plt.plot(dates[:n_plot], all_preds[:n_plot], label='Predicted')
                 plt.title(f"{model_name} Predictions")
                 plt.xlabel("Date")
                 plt.ylabel("Sales")
@@ -349,9 +359,10 @@ with prediction_tab:
                         pred = data['preds']
                         
                         # Plot
+                        n_plot = min(100, len(actual))
                         plt.figure(figsize=(10, 5))
-                        plt.plot(dates[:100], actual[:100], label='Actual', color='blue')
-                        plt.plot(dates[:100], pred[:100], label='Predicted', color='orange')
+                        plt.plot(dates[:n_plot], actual[:n_plot], label='Actual', color='blue')
+                        plt.plot(dates[:n_plot], pred[:n_plot], label='Predicted', color='orange')
                         plt.title(f"{model_name} Predictions: Store {store_nbr}, Family {family}")
                         plt.xlabel("Date")
                         plt.ylabel("Sales")
@@ -385,7 +396,7 @@ with specific_prediction_tab:
     st.header("Predict Sales for Specific Date")
     
     if st.session_state.train_set is not None:
-        # Get timelines
+        # Get store numbers and families
         store_nbrs = sorted(st.session_state.train_set['store_nbr'].unique())
         families = sorted(st.session_state.train_set['family'].unique())
         
@@ -437,10 +448,11 @@ with specific_prediction_tab:
                 train_group = st.session_state.train_set[(st.session_state.train_set['store_nbr'] == store_nbr) & 
                                                         (st.session_state.train_set['family'] == family)]
                 combined = pd.concat([train_group, spec_df]).sort_values(['store_nbr', 'family', 'date'])
-                for lag in [7, 14, 28]:
+                for lag in [7, 14, 28, 56]:
                     combined[f'lag_{lag}'] = combined.groupby(['store_nbr', 'family'])['sales'].shift(lag).fillna(0).astype('float32')
                 combined['roll_mean_7'] = combined.groupby(['store_nbr', 'family'])['sales'].shift(1).rolling(7, min_periods=1).mean().fillna(0).astype('float32')
                 combined['roll_std_7'] = combined.groupby(['store_nbr', 'family'])['sales'].shift(1).rolling(7, min_periods=1).std().fillna(0).astype('float32')
+                combined['roll_mean_14'] = combined.groupby(['store_nbr', 'family'])['sales'].shift(1).rolling(14, min_periods=1).mean().fillna(0).astype('float32')
                 spec_df = combined[combined['date'].isin(target_dates)]
                 
                 # Scale features
@@ -450,12 +462,13 @@ with specific_prediction_tab:
                 for model_name in selected_models:
                     if model_name in st.session_state.model_results:
                         st.subheader(f"{model_name} Prediction")
-                        if model_name in ["XGBoost", "LightGBM"]:
+                        if model_name in ["XGBoost", "LightGBM", "Random Forest"]:
                             model_path = os.path.join(tempfile.gettempdir(), f"{model_name.lower()}_{store_nbr}_{family}.pt")
                             if os.path.exists(model_path):
                                 model = joblib.load(model_path)
                                 X_spec = spec_df[st.session_state.feature_cols]
-                                predictions = model.predict(X_spec).clip(0)
+                                predictions_log = model.predict(X_spec)
+                                predictions = np.expm1(predictions_log).clip(0)
                                 spec_df['predicted_sales'] = predictions
                             else:
                                 spec_df['predicted_sales'] = np.zeros(len(spec_df))
@@ -474,7 +487,7 @@ with specific_prediction_tab:
                             else:
                                 spec_df['predicted_sales'] = np.zeros(len(spec_df))
                         else:
-                            if not train_group.empty and len(train_group) >= 7:
+                            if not train_group.empty and len(train_group) >= 14:
                                 if model_name == "ARIMA":
                                     model = ARIMA(train_group['sales'], order=(5,1,0))
                                     fit = model.fit()
@@ -502,14 +515,17 @@ with specific_prediction_tab:
                                     model = ExponentialSmoothing(train_group['sales'], trend='add', seasonal='mul', seasonal_periods=7)
                                     fit = model.fit()
                                     predictions = fit.forecast(steps=len(spec_df))
-                                elif model_name == "Theta":
-                                    model = Theta(seasonality_period=7)
-                                    fit = model.fit(y=train_group['sales'].values)
-                                    predictions = fit.forecast(h=len(spec_df))['mean']
-                                elif model_name == "STL":
-                                    model = STL(seasonality_period=7)
-                                    fit = model.fit(y=train_group['sales'].values)
-                                    predictions = fit.forecast(h=len(spec_df))['mean']
+                                elif model_name == "VAR":
+                                    var_data = train_group[['sales', 'onpromotion']].dropna()
+                                    if len(var_data) >= 14:
+                                        model = VAR(var_data)
+                                        fit = model.fit(maxlags=7)
+                                        lag_order = fit.k_ar
+                                        last_obs = var_data.values[-lag_order:]
+                                        forecast = fit.forecast(last_obs, steps=len(spec_df))
+                                        predictions = forecast[:, 0]
+                                    else:
+                                        predictions = np.zeros(len(spec_df))
                             else:
                                 predictions = np.zeros(len(spec_df))
                             spec_df['predicted_sales'] = np.clip(predictions, 0, None)
@@ -600,10 +616,11 @@ with forecasting_tab:
                 train_group = st.session_state.train_set[(st.session_state.train_set['store_nbr'] == store_nbr) & 
                                                         (st.session_state.train_set['family'] == family)]
                 combined = pd.concat([train_group, forecast_df]).sort_values(['store_nbr', 'family', 'date'])
-                for lag in [7, 14, 28]:
+                for lag in [7, 14, 28, 56]:
                     combined[f'lag_{lag}'] = combined.groupby(['store_nbr', 'family'])['sales'].shift(lag).fillna(0).astype('float32')
                 combined['roll_mean_7'] = combined.groupby(['store_nbr', 'family'])['sales'].shift(1).rolling(7, min_periods=1).mean().fillna(0).astype('float32')
                 combined['roll_std_7'] = combined.groupby(['store_nbr', 'family'])['sales'].shift(1).rolling(7, min_periods=1).std().fillna(0).astype('float32')
+                combined['roll_mean_14'] = combined.groupby(['store_nbr', 'family'])['sales'].shift(1).rolling(14, min_periods=1).mean().fillna(0).astype('float32')
                 forecast_df = combined[combined['date'].isin(target_dates)]
                 
                 # Scale features
@@ -613,12 +630,13 @@ with forecasting_tab:
                 for model_name in selected_models:
                     if model_name in st.session_state.model_results:
                         st.subheader(f"{model_name} Forecast")
-                        if model_name in ["XGBoost", "LightGBM"]:
+                        if model_name in ["XGBoost", "LightGBM", "Random Forest"]:
                             model_path = os.path.join(tempfile.gettempdir(), f"{model_name.lower()}_{store_nbr}_{family}.pt")
                             if os.path.exists(model_path):
                                 model = joblib.load(model_path)
                                 X_forecast = forecast_df[st.session_state.feature_cols]
-                                predictions = model.predict(X_forecast).clip(0)
+                                predictions_log = model.predict(X_forecast)
+                                predictions = np.expm1(predictions_log).clip(0)
                                 forecast_df['predicted_sales'] = predictions
                             else:
                                 forecast_df['predicted_sales'] = np.zeros(len(forecast_df))
@@ -637,7 +655,7 @@ with forecasting_tab:
                             else:
                                 forecast_df['predicted_sales'] = np.zeros(len(forecast_df))
                         else:
-                            if not train_group.empty and len(train_group) >= 7:
+                            if not train_group.empty and len(train_group) >= 14:
                                 if model_name == "ARIMA":
                                     model = ARIMA(train_group['sales'], order=(5,1,0))
                                     fit = model.fit()
@@ -665,14 +683,17 @@ with forecasting_tab:
                                     model = ExponentialSmoothing(train_group['sales'], trend='add', seasonal='mul', seasonal_periods=7)
                                     fit = model.fit()
                                     predictions = fit.forecast(steps=len(forecast_df))
-                                elif model_name == "Theta":
-                                    model = Theta(seasonality_period=7)
-                                    fit = model.fit(y=train_group['sales'].values)
-                                    predictions = fit.forecast(h=len(forecast_df))['mean']
-                                elif model_name == "STL":
-                                    model = STL(seasonality_period=7)
-                                    fit = model.fit(y=train_group['sales'].values)
-                                    predictions = fit.forecast(h=len(forecast_df))['mean']
+                                elif model_name == "VAR":
+                                    var_data = train_group[['sales', 'onpromotion']].dropna()
+                                    if len(var_data) >= 14:
+                                        model = VAR(var_data)
+                                        fit = model.fit(maxlags=7)
+                                        lag_order = fit.k_ar
+                                        last_obs = var_data.values[-lag_order:]
+                                        forecast = fit.forecast(last_obs, steps=len(forecast_df))
+                                        predictions = forecast[:, 0]
+                                    else:
+                                        predictions = np.zeros(len(forecast_df))
                             else:
                                 predictions = np.zeros(len(forecast_df))
                             forecast_df['predicted_sales'] = np.clip(predictions, 0, None)
