@@ -165,7 +165,10 @@ def main():
                     data = get_download_file(train, "train_data.csv")
                     st.download_button("Download Train Data", data[0], "train_data.csv", data[1])
 
-            st.form_submit_button("Apply", on_click=lambda: st.session_state.update({'train_date': date_col, 'train_target': target_col, 'configured': True}))
+            with st.form("train_config_update"):
+                date_col = st.selectbox("Date Column", st.session_state['train_df'].columns, index=st.session_state['train_df'].columns.tolist().index(st.session_state.get('train_date', 'date')) if 'train_date' in st.session_state else 0)
+                target_col = st.selectbox("Target Column", st.session_state['train_df'].columns, index=st.session_state['train_df'].columns.tolist().index(st.session_state.get('train_target', 'sales')) if 'train_target' in st.session_state else 0)
+                st.form_submit_button("Apply", on_click=lambda: st.session_state.update({'train_date': date_col, 'train_target': target_col, 'configured': True}))
 
     with test_tab:
         test_file = st.file_uploader("Upload Test Data (.csv)", ['csv'], key="test")
@@ -202,7 +205,9 @@ def main():
                     data = get_download_file(test, "test_data.csv")
                     st.download_button("Download Test Data", data[0], "test_data.csv", data[1])
 
-            st.form_submit_button("Apply", on_click=lambda: st.session_state.update({'test_date': date_col, 'configured': True}))
+            with st.form("test_config_update"):
+                date_col = st.selectbox("Date Column", st.session_state['test_df'].columns, index=st.session_state['test_df'].columns.tolist().index(st.session_state.get('test_date', 'date')) if 'test_date' in st.session_state else 0)
+                st.form_submit_button("Apply", on_click=lambda: st.session_state.update({'test_date': date_col, 'configured': True}))
 
     if 'train_df' in st.session_state and 'test_df' in st.session_state:
         with st.form("features"):
