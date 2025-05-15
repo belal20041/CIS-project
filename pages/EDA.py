@@ -222,9 +222,7 @@ def main():
                 date_col = st.selectbox("Date", train.columns, key="train_date")
                 target_col = st.selectbox("Target", train.columns, key="train_target")
                 numeric_cols, categorical_cols = detect_column_types(train, date_col)
-                numeric_cols = st.multiselect("Numeric", train.columns, default=numeric_cols,
-
- key="train_numeric")
+                numeric_cols = st.multiselect("Numeric", train.columns, default=numeric_cols, key="train_numeric")
                 categorical_cols = st.multiselect("Categorical", train.columns, default=categorical_cols, key="train_categorical")
                 outlier_method = st.selectbox("Outliers", ['None', 'Remove', 'Replace'], key="train_outlier")
                 outlier_method = outlier_method.lower() if outlier_method != 'None' else None
@@ -249,6 +247,10 @@ def main():
     with test_tab:
         test_file = st.file_uploader("Test Data", ['csv'], key="test")
         if test_file:
+            # Reset test configuration when a new file is uploaded
+            if 'test_file' in st.session_state and st.session_state['test_file'] != test_file:
+                for key in ['test_date_col', 'test_numeric_cols', 'test_categorical_cols', 'test_outlier_method', 'test_scale', 'test_configured', 'test_df']:
+                    st.session_state.pop(key, None)
             with st.form("test_config"):
                 test = pd.read_csv(test_file)
                 st.dataframe(test.head(), height=100)
