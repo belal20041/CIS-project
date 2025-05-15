@@ -23,6 +23,9 @@ import joblib
 import psutil
 from datetime import datetime
 
+# Suppress TensorFlow GPU warnings
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+
 # Streamlit app title
 st.title("Sales Forecasting Dashboard")
 
@@ -69,16 +72,32 @@ def load_and_process_data(train_file, test_file, sub_file):
     test = pd.read_csv(test_file)
     sub = pd.read_csv(sub_file)
     
-    # Parse dates
-    train['date'] = pd.to_datetime(train['date'], errors='coerce')
-    test['date'] = pd.to_datetime(test['date'], errors='coerce')
+    # Validate required columns
+    required_train_cols = {'date', 'store_nbr', 'family', 'sales', 'onpromotion'}
+    required_test_cols = {'date', 'store_nbr', 'family', 'onpromotion', 'id'}
+    required_sub_cols = {'id', 'sales'}
+    if not (required_train_cols.issubset(train.columns) and 
+            required_test_cols.issubset(test.columns) and 
+            required_sub_cols.issubset(sub.columns)):
+        st.error("CSV files missing required columns.")
+        st.stop()
+    
+    # Parse dates with dayfirst=True
+    train['date'] = pd.to_datetime(train['date'], dayfirst=True, errors='coerce')
+    test['date'] = pd.to_datetime(test['date'], dayfirst=True, errors='coerce')
     train = train.dropna(subset=['date'])
     test = test.dropna(subset=['date'])
+    
+    # Validate non-empty data
+    if train.empty or test.empty or sub.empty:
+        st.error("One or more uploaded CSV files are empty after processing.")
+        st.stop()
     
     # Type conversions
     train[['store_nbr', 'onpromotion']] = train[['store_nbr', 'onpromotion']].astype('int32')
     test[['store_nbr', 'onpromotion']] = test[['store_nbr', 'onpromotion']].astype('int32')
     train['sales'] = train['sales'].astype('float32')
+    sub['sales'] = sub['sales'].astype('float32')
     
     # Combine and aggregate
     train['is_train'] = 1
@@ -169,9 +188,6 @@ with training_tab:
         with st.spinner("Processing data..."):
             # Load and process data
             train_set, val_set, test, sub, feature_cols, scaler, le_store, le_family = load_and_process_data(train_file, test_file, sub_file)
-            if train_set.empty or val_set.empty or test.empty or sub.empty:
-                st.error("One or more uploaded files are empty or invalid.")
-                st.stop()
             
             st.session_state.train_set = train_set
             st.session_state.val_set = val_set
@@ -219,9 +235,9 @@ with training_tab:
                             y_train = np.log1p(train_group['sales'].clip(0))
                             X_val = val_group[feature_cols]
                             if model_name == "XGBoost":
-                                model = XGBRegressor(n_estimators=100, learning_rate=0.1)
+                                model = XGBRegressor(n_estimators=100, learning_rate=0.1, random_state=42)
                             elif model_name == "LightGBM":
-                                model = LGBMRegressor(n_estimators=100, learning_rate=0.1)
+                                model = LGBMRegressor(n_estimators=100, learning_rate=0.1, random_state=42)
                             else:
                                 model = RandomForestRegressor(n_estimators=100, random_state=42)
                             model.fit(X_train, y_train)
@@ -238,7 +254,7 @@ with training_tab:
                                     Dense(1)
                                 ])
                                 model.compile(optimizer='adam', loss='mse')
-                                model.fit(X, y, epochs=10, batch_size=32, verbose=0)
+                                model.fit(X, y, epochs=5, batch_size=32, verbose=0)
                                 last_seq = train_group['sales'].tail(7).values.reshape(1, 7, 1)
                                 preds = []
                                 for _ in range(len(actuals)):
@@ -255,7 +271,7 @@ with training_tab:
                             preds = fit.forecast(steps=len(actuals))
                         
                         elif model_name == "TBATS":
-                            model = TBATS(seasonal_periods=[7, 365.25])
+                            model = TBATS(seasonal_periods=[7, 365.25], use_box_cox=False)
                             fit = model.fit(train_group['sales'])
                             preds = fit.forecast(steps=len(actuals))
                         
@@ -508,7 +524,7 @@ with specific_prediction_tab:
                                     fit = model.fit()
                                     predictions = fit.forecast(steps=len(spec_df))
                                 elif model_name == "TBATS":
-                                    model = TBATS(seasonal_periods=[7, 365.25])
+                                    model = TBATS(seasonal_periods=[7, 365.25], use_box_cox=False)
                                     fit = model.fit(train_group['sales'])
                                     predictions = fit.forecast(steps=len(spec_df))
                                 elif model_name == "Holt-Winters":
@@ -676,7 +692,7 @@ with forecasting_tab:
                                     fit = model.fit()
                                     predictions = fit.forecast(steps=len(forecast_df))
                                 elif model_name == "TBATS":
-                                    model = TBATS(seasonal_periods=[7, 365.25])
+                                    model = TBATS(seasonal_periods=[7, 365.25], use_box_cox=False)
                                     fit = model.fit(train_group['sales'])
                                     predictions = fit.forecast(steps=len(forecast_df))
                                 elif model_name == "Holt-Winters":
