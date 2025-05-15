@@ -8,6 +8,7 @@ from PIL import Image
 from sklearn.preprocessing import StandardScaler, LabelEncoder
 from sklearn.metrics import mean_squared_error, mean_absolute_error, mean_absolute_percentage_error
 from sklearn.linear_model import LinearRegression
+import joblib
 import psutil
 import warnings
 warnings.filterwarnings("ignore")
@@ -110,8 +111,7 @@ with training_tab:
     sub_file = st.file_uploader("Upload Submission CSV", type="csv", key="uploader_sub")
     
     # Model selection
-    models = ["Naive", "Seasonal Naive", "Exponential Smoothing", "Holt's Linear Trend", 
-              "Moving Average", "Linear Regression", "XGBoost", "ARIMA", "SARIMA", "Prophet", "LSTM"]
+    models = ["Naive", "Seasonal Naive", "Moving Average", "Linear Regression"]  # Simplified for demo
     selected_models = st.multiselect("Select Models to Train", models, default=["Naive"])
     
     # Train button
@@ -132,7 +132,7 @@ with training_tab:
                 st.session_state.sub = sub
                 st.session_state.feature_cols = feature_cols
                 
-                # Minimal prediction generation
+                # Prediction generation
                 for model_name in selected_models:
                     st.write(f"Generating predictions for {model_name}...")
                     temp_dir = tempfile.gettempdir()
@@ -169,14 +169,17 @@ with training_tab:
                         for (store, family), group in val_set.groupby(['store_nbr', 'family']):
                             mask = val_set.index.isin(group.index)
                             pred_dict[(store, family)] = y_pred[mask].tolist()
-                    
-                    else:
-                        # Placeholder for complex models
-                        for (store, family), group in train_set.groupby(['store_nbr', 'family']):
-                            pred_dict[(store, family)] = np.full(val_steps, group['sales'].mean()).tolist()
-                        for (store, family), group in val_set.groupby(['store_nbr', 'family']):
-                            actuals.extend(group['sales'].values)
-                            preds.extend(pred_dict[(store, family)])
+                        
+                        # Save model weights
+                        model_path = os.path.join(temp_dir, f"linear_regression_model.joblib")
+                        joblib.dump(model, model_path)
+                        st.session_state.model_results[model_name] = {
+                            'metrics': None,  # Updated below
+                            'plot_path': None,
+                            'y_val': actuals,
+                            'y_pred': pred_dict,
+                            'model_path': model_path
+                        }
                     
                     # Compute metrics
                     actual = np.clip(actuals, 0, None)
@@ -184,6 +187,7 @@ with training_tab:
                     metrics = {
                         'rmsle': np.sqrt(mean_squared_error(np.log1p(actual), np.log1p(predicted))),
                         'rmse': np.sqrt(mean_squared_error(actual, predicted)),
+_theory = np.log1p  # For log(1 + x) transformation
                         'mae': mean_absolute_error(actual, predicted),
                         'mape': mean_absolute_percentage_error(actual + 1e-10, predicted + 1e-10)
                     }
@@ -198,13 +202,9 @@ with training_tab:
                     plt.savefig(plot_path)
                     plt.close()
                     
-                    # Store results
-                    st.session_state.model_results[model_name] = {
-                        'metrics': metrics,
-                        'plot_path': plot_path,
-                        'y_val': actuals,
-                        'y_pred': pred_dict
-                    }
+                    # Update results
+                    st.session_state.model_results[model_name]['metrics'] = metrics
+                    st.session_state.model_results[model_name]['plot_path'] = plot_path
                     
                     # Display metrics
                     st.write(f"### {model_name} Metrics")
@@ -222,20 +222,18 @@ with training_tab:
 
 # Prediction Tab
 with prediction_tab:
-    st.header("Visualize Predictions vs Actual")
+    st.header("Visualize Predictions and Forecast")
     
-    # Check if data is loaded
     if st.session_state.train_set is not None:
         # Get store numbers and families
         store_nbrs = sorted(st.session_state.train_set['store_nbr'].unique())
         families = sorted(st.session_state.train_set['family'].unique())
         
-        # User inputs
+        # User inputs for visualization
+        st.subheader("Visualize Predictions vs Actual")
         store_nbr = st.selectbox("Select Store Number", store_nbrs)
         family = st.selectbox("Select Product Family", families)
         selected_models = st.multiselect("Select Models to Visualize", models, default=["Naive"])
-        
-        st.divider()
         
         if selected_models:
             for model_name in selected_models:
@@ -272,8 +270,6 @@ with prediction_tab:
                             if os.path.exists(plot_path):
                                 image = Image.open(plot_path)
                                 st.image(image, caption=f"{model_name} Predictions vs Actual", use_column_width=True)
-                            else:
-                                st.write("Plot not available.")
                             
                             # Display metrics
                             st.write("### Metrics")
@@ -288,7 +284,86 @@ with prediction_tab:
                         st.write("No validation data for this store-family combination.")
                 else:
                     st.write("Model not trained. Please generate predictions in the Training tab.")
-        else:
-            st.write("Please select at least one model to visualize.")
+        
+        # Forecasting section
+        st.divider()
+        st.subheader("Forecast Future Sales")
+        forecast_days = st.number_input("Number of Days to Forecast", min_value=1, max_value=365, value=16)
+        forecast_button = st.button("Generate Forecast")
+        
+        if forecast_button:
+            with st.spinner("Generating forecast..."):
+                # Create future dates
+                last_date = st.session_state.test['date'].max()
+                future_dates = pd.date_range(start=last_date + pd.Timedelta(days=1), periods=forecast_days)
+                
+                # Prepare future data
+                future_data = []
+                for store_nbr in store_nbrs:
+                    for family in families:
+                        for date in future_dates:
+                            future_data.append({
+                                'store_nbr': store_nbr,
+                                'family': family,
+                                'date': date,
+                                'onpromotion': 0,
+                                'is_train': 0
+                            })
+                future_df = pd.DataFrame(future_data)
+                
+                # Add features
+                future_df['day'] = future_df['date'].dt.day.astype('int8')
+                future_df['dow'] = future_df['date'].dt.dayofweek.astype('int8')
+                future_df['month'] = future_df['date'].dt.month.astype('int8')
+                future_df['year'] = future_df['date'].dt.year.astype('int16')
+                future_df['sin_month'] = np.sin(2 * np.pi * future_df['month'] / 12).astype('float32')
+                future_df['store_nbr_encoded'] = LabelEncoder().fit_transform(future_df['store_nbr']).astype('int8')
+                future_df['family_encoded'] = LabelEncoder().fit_transform(future_df['family']).astype('int8')
+                
+                # Compute lags and rolling means
+                combined = pd.concat([st.session_state.train_set, st.session_state.test, future_df]).sort_values(['store_nbr', 'family', 'date'])
+                for lag in [7, 14]:
+                    combined[f'lag_{lag}'] = combined.groupby(['store_nbr', 'family'])['sales'].shift(lag).astype('float32')
+                combined['roll_mean_7'] = combined.groupby(['store_nbr', 'family'])['sales'].shift(1).rolling(7, min_periods=1).mean().astype('float32')
+                future_df = combined[combined['date'].isin(future_dates)]
+                
+                # Scale features
+                scaler = StandardScaler()
+                future_df[st.session_state.feature_cols] = scaler.fit_transform(future_df[st.session_state.feature_cols].fillna(0)).astype('float32')
+                
+                # Generate forecasts
+                for model_name in selected_models:
+                    if model_name in st.session_state.model_results:
+                        result = st.session_state.model_results[model_name]
+                        if model_name == "Linear Regression":
+                            model_path = result.get('model_path')
+                            if model_path and os.path.exists(model_path):
+                                model = joblib.load(model_path)
+                                X_future = future_df[st.session_state.feature_cols]
+                                predictions = model.predict(X_future)
+                                future_df['predicted_sales'] = np.clip(predictions, 0, None)
+                            else:
+                                st.write(f"Model weights not found for {model_name}.")
+                        else:
+                            # Placeholder for non-persistent models
+                            future_df['predicted_sales'] = np.full(len(future_df), future_df['sales'].mean())
+                        
+                        # Plot forecast
+                        plt.figure(figsize=(10, 5))
+                        plt.plot(future_df['date'], future_df['predicted_sales'], label=f'{model_name} Forecast')
+                        plt.title(f"{model_name} Sales Forecast for {forecast_days} Days")
+                        plt.xlabel("Date")
+                        plt.ylabel("Predicted Sales")
+                        plt.legend()
+                        plot_path = os.path.join(tempfile.gettempdir(), f"{model_name.lower()}_forecast.png")
+                        plt.savefig(plot_path)
+                        plt.close()
+                        
+                        # Display forecast plot
+                        if os.path.exists(plot_path):
+                            image = Image.open(plot_path)
+                            st.image(image, caption=f"{model_name} Forecast", use_column_width=True)
+                    else:
+                        st.write(f"Model {model_name} not trained.")
     else:
         st.write("Please upload data and generate predictions in the Training tab.")
