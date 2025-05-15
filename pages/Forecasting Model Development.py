@@ -2,13 +2,13 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from datetime import datetime
-import random
 import matplotlib.pyplot as plt
 from PIL import Image
 import tempfile
 
 st.title("Sales Forecasting Dashboard")
 
+# Initialize session state
 if 'initialized' not in st.session_state:
     st.session_state.initialized = True
     st.session_state.model_results = {}
@@ -20,91 +20,13 @@ if 'initialized' not in st.session_state:
     st.session_state.scaler = None
     st.session_state.le_store = None
     st.session_state.le_family = None
-def load_and_process_data(train_file, test_file, sub_file):
-    train_dtypes = {'store_nbr': 'int32', 'family': 'category', 'sales': 'float32', 'onpromotion': 'int32'}
-    test_dtypes = {'store_nbr': 'int32', 'family': 'category', 'onpromotion': 'int32', 'id': 'int32'}
-    
-    chunksize = 50000
-    target_rows = MAX_TRAIN_ROWS
-    train_samples = []
-    total_rows = 0
-    
-    # Read train.csv in chunks
-    train_chunks = pd.read_csv(train_file, dtype=train_dtypes, chunksize=chunksize)
-    store_family_counts = {}
-    for chunk in train_chunks:
-        total_rows += len(chunk)
-        for (store, family), group in chunk.groupby(['store_nbr', 'family']):
-            store_family_counts[(store, family)] = store_family_counts.get((store, family), 0) + len(group)
-    
-    num_pairs = len(store_family_counts)
-    rows_per_pair = max(1, target_rows // num_pairs)
-    
-    # Sample train.csv
-    train_chunks = pd.read_csv(train_file, dtype=train_dtypes, chunksize=chunksize)
-    for chunk in train_chunks:
-        sampled_chunk = chunk.groupby(['store_nbr', 'family']).apply(
-            lambda x: x.sample(n=min(len(x), rows_per_pair), random_state=42)
-        ).reset_index(drop=True)
-        train_samples.append(sampled_chunk)
-    
-    train = pd.concat(train_samples, ignore_index=True)
-    if len(train) > target_rows:
-        train = train.sample(n=target_rows, random_state=42)
-    
-    # Read test.csv and sample_submission.csv
-    test = pd.read_csv(test_file, dtype=test_dtypes)
-    sub = pd.read_csv(sub_file, dtype={'id': 'int32', 'sales': 'float32'})
-    
-    train['date'] = pd.to_datetime(train['date'], dayfirst=True)
-    test['date'] = pd.to_datetime(test['date'], dayfirst=True)
-    
-    train['is_train'] = 1
-    test['is_train'] = 0
-    combined = pd.concat([train, test]).sort_values(['store_nbr', 'family', 'date'])
-    agg_dict = {'sales': 'mean', 'onpromotion': 'sum', 'is_train': 'first', 'id': 'first'}
-    combined = combined.groupby(['store_nbr', 'family', 'date']).agg(agg_dict).reset_index()
-    combined = combined.astype({'store_nbr': 'int32', 'family': 'category', 'date': 'datetime64[ns]', 
-                               'sales': 'float32', 'onpromotion': 'int32', 'is_train': 'int8'})
-    
-    store_families = combined[['store_nbr', 'family']].drop_duplicates()
-    if len(store_families) > MAX_GROUPS:
-        store_families = store_families.sample(n=MAX_GROUPS, random_state=42)
-        combined = combined.merge(store_families, on=['store_nbr', 'family'])
-    
-    date_range = pd.date_range(start=combined['date'].min(), end=combined['date'].max(), freq='D')
-    index = pd.MultiIndex.from_product([store_families['store_nbr'], store_families['family'], date_range], 
-                                       names=['store_nbr', 'family', 'date'])
-    combined = combined.set_index(['store_nbr', 'family', 'date']).reindex(index).reset_index()
-    combined['sales'] = combined['sales'].fillna(0).astype('float32')
-    combined['onpromotion'] = combined['onpromotion'].fillna(0).astype('int32')
-    combined['is_train'] = combined['is_train'].fillna(0).astype('int8')
-    
-    combined['day'] = combined['date'].dt.day.astype('int8')
-    combined['dow'] = combined['date'].dt.dayofweek.astype('int8')
-    combined['month'] = combined['date'].dt.month.astype('int8')
-    combined['lag_7'] = combined.groupby(['store_nbr', 'family'])['sales'].shift(7).fillna(0).astype('float32')
-    
-    from sklearn.preprocessing import LabelEncoder
-    le_store = LabelEncoder()
-    le_family = LabelEncoder()
-    combined['store_nbr_encoded'] = le_store.fit_transform(combined['store_nbr']).astype('int8')
-    combined['family_encoded'] = le_family.fit_transform(combined['family']).astype('int8')
-    
-    feature_cols = ['onpromotion', 'day', 'dow', 'month', 'store_nbr_encoded', 'family_encoded', 'lag_7']
-    
-    from sklearn.preprocessing import StandardScaler
-    scaler = StandardScaler()
-    combined[feature_cols] = scaler.fit_transform(combined[feature_cols]).astype('float32')
-    
-    train = combined[combined['is_train'] == 1]
-    test = combined[combined['is_train'] == 0].drop(['sales'], axis=1)
-    train_set = train[train['date'] <= TRAIN_END]
-    val_set = train[(train['date'] > TRAIN_END) & (train['date'] <= VAL_END)]
-    
-    return train_set, val_set, test, sub, feature_cols, scaler, le_store, le_family
-training_tab, prediction_tab, specific_prediction_tab, forecasting_tab = st.tabs(["Training", "Prediction", "Specific Date Prediction", "Forecasting"])
 
+# Define tabs
+training_tab, prediction_tab, specific_prediction_tab, forecasting_tab = st.tabs(
+    ["Training", "Prediction", "Specific Date Prediction", "Forecasting"]
+)
+
+# Constants
 TRAIN_END = '2017-07-15'
 VAL_END = '2017-08-15'
 MAX_GROUPS = 50
@@ -118,34 +40,36 @@ with training_tab:
     test_file = st.file_uploader("Upload Test CSV", type="csv", key="uploader_test")
     sub_file = st.file_uploader("Upload Submission CSV", type="csv", key="uploader_sub")
     
-    models = ["ARIMA", "SARIMA", "Prophet", "XGBoost", "LightGBM", "ETS", "TBATS", "Holt-Winters", "VAR", "Random Forest"]
-    selected_models = st.multiselect("Select Models to Train", models, default=["ARIMA"], max_selections=MAX_MODELS)
+    models = ["ARIMA", "SARIMA", "Prophet", "XGBoost", "LightGBM", "ETS", 
+              "TBATS", "Holt-Winters", "VAR", "Random Forest"]
+    selected_models = st.multiselect("Select Models to Train", models, 
+                                    default=["ARIMA"], max_selections=MAX_MODELS)
     
     train_button = st.button("Generate Predictions")
     
     if train_button and train_file and test_file and sub_file and selected_models:
         with st.spinner("Processing data..."):
             def load_and_process_data(train_file, test_file, sub_file):
-                train_dtypes = {'store_nbr': 'int32', 'family': 'category', 'sales': 'float32', 'onpromotion': 'int32'}
-                test_dtypes = {'store_nbr': 'int32', 'family': 'category', 'onpromotion': 'int32', 'id': 'int32'}
+                # Define dtypes
+                train_dtypes = {'store_nbr': 'int32', 'family': 'category', 
+                               'sales': 'float32', 'onpromotion': 'int32'}
+                test_dtypes = {'store_nbr': 'int32', 'family': 'category', 
+                              'onpromotion': 'int32', 'id': 'int32'}
+                sub_dtypes = {'id': 'int32', 'sales': 'float32'}
                 
+                # Read train.csv in chunks for sampling
                 chunksize = 50000
-                target_rows = MAX_TRAIN_ROWS
-                train_samples = []
-                total_rows = 0
-                
-                # Read train.csv in chunks
-                train_chunks = pd.read_csv(train_file, dtype=train_dtypes, chunksize=chunksize)
                 store_family_counts = {}
+                train_chunks = pd.read_csv(train_file, dtype=train_dtypes, chunksize=chunksize)
                 for chunk in train_chunks:
-                    total_rows += len(chunk)
                     for (store, family), group in chunk.groupby(['store_nbr', 'family']):
-                        store_family_counts[(store, family)] = store_family_counts.get((store, family), 0) + len(group)
+                        store_family_counts[(store, family)] = store_family_counts.get(
+                            (store, family), 0) + len(group)
                 
+                # Stratified sampling
                 num_pairs = len(store_family_counts)
-                rows_per_pair = max(1, target_rows // num_pairs)
-                
-                # Sample train.csv
+                rows_per_pair = max(1, MAX_TRAIN_ROWS // num_pairs)
+                train_samples = []
                 train_chunks = pd.read_csv(train_file, dtype=train_dtypes, chunksize=chunksize)
                 for chunk in train_chunks:
                     sampled_chunk = chunk.groupby(['store_nbr', 'family']).apply(
@@ -154,54 +78,66 @@ with training_tab:
                     train_samples.append(sampled_chunk)
                 
                 train = pd.concat(train_samples, ignore_index=True)
-                if len(train) > target_rows:
-                    train = train.sample(n=target_rows, random_state=42)
+                if len(train) > MAX_TRAIN_ROWS:
+                    train = train.sample(n=MAX_TRAIN_ROWS, random_state=42)
                 
                 # Read test.csv and sample_submission.csv
                 test = pd.read_csv(test_file, dtype=test_dtypes)
-                sub = pd.read_csv(sub_file, dtype={'id': 'int32', 'sales': 'float32'})
+                sub = pd.read_csv(sub_file, dtype=sub_dtypes)
                 
+                # Convert dates
                 train['date'] = pd.to_datetime(train['date'], dayfirst=True)
                 test['date'] = pd.to_datetime(test['date'], dayfirst=True)
                 
+                # Combine train and test
                 train['is_train'] = 1
                 test['is_train'] = 0
                 combined = pd.concat([train, test]).sort_values(['store_nbr', 'family', 'date'])
+                
+                # Aggregate by store, family, date
                 agg_dict = {'sales': 'mean', 'onpromotion': 'sum', 'is_train': 'first', 'id': 'first'}
                 combined = combined.groupby(['store_nbr', 'family', 'date']).agg(agg_dict).reset_index()
-                combined = combined.astype({'store_nbr': 'int32', 'family': 'category', 'date': 'datetime64[ns]', 
-                                           'sales': 'float32', 'onpromotion': 'int32', 'is_train': 'int8'})
+                combined = combined.astype({'store_nbr': 'int32', 'family': 'category', 
+                                          'date': 'datetime64[ns]', 'sales': 'float32', 
+                                          'onpromotion': 'int32', 'is_train': 'int8'})
                 
-                store_families = combined[['store_nbr', 'family']].drop_duplicates()
-                if len(store_families) > MAX_GROUPS:
-                    store_families = store_families.sample(n=MAX_GROUPS, random_state=42)
-                    combined = combined.merge(store_families, on=['store_nbr', 'family'])
+                # Limit to MAX_GROUPS
+                store_family_pairs = combined[['store_nbr', 'family']].drop_duplicates()
+                if len(store_family_pairs) > MAX_GROUPS:
+                    store_family_pairs = store_family_pairs.sample(n=MAX_GROUPS, random_state=42)
+                    combined = combined.merge(store_family_pairs, on=['store_nbr', 'family'])
                 
+                # Fill missing dates
                 date_range = pd.date_range(start=combined['date'].min(), end=combined['date'].max(), freq='D')
-                index = pd.MultiIndex.from_product([store_families['store_nbr'], store_families['family'], date_range], 
-                                                   names=['store_nbr', 'family', 'date'])
+                index = pd.MultiIndex.from_product(
+                    [store_family_pairs['store_nbr'], store_family_pairs['family'], date_range],
+                    names=['store_nbr', 'family', 'date']
+                )
                 combined = combined.set_index(['store_nbr', 'family', 'date']).reindex(index).reset_index()
                 combined['sales'] = combined['sales'].fillna(0).astype('float32')
                 combined['onpromotion'] = combined['onpromotion'].fillna(0).astype('int32')
                 combined['is_train'] = combined['is_train'].fillna(0).astype('int8')
                 
+                # Feature engineering
                 combined['day'] = combined['date'].dt.day.astype('int8')
                 combined['dow'] = combined['date'].dt.dayofweek.astype('int8')
                 combined['month'] = combined['date'].dt.month.astype('int8')
                 combined['lag_7'] = combined.groupby(['store_nbr', 'family'])['sales'].shift(7).fillna(0).astype('float32')
                 
+                # Encode categorical variables
                 from sklearn.preprocessing import LabelEncoder
                 le_store = LabelEncoder()
                 le_family = LabelEncoder()
                 combined['store_nbr_encoded'] = le_store.fit_transform(combined['store_nbr']).astype('int8')
                 combined['family_encoded'] = le_family.fit_transform(combined['family']).astype('int8')
                 
+                # Scale features
                 feature_cols = ['onpromotion', 'day', 'dow', 'month', 'store_nbr_encoded', 'family_encoded', 'lag_7']
-                
                 from sklearn.preprocessing import StandardScaler
                 scaler = StandardScaler()
                 combined[feature_cols] = scaler.fit_transform(combined[feature_cols]).astype('float32')
                 
+                # Split into train, validation, test
                 train = combined[combined['is_train'] == 1]
                 test = combined[combined['is_train'] == 0].drop(['sales'], axis=1)
                 train_set = train[train['date'] <= TRAIN_END]
@@ -214,8 +150,12 @@ with training_tab:
                 mask = y_true > 0
                 return np.mean(np.abs((y_true[mask] - y_pred[mask]) / y_true[mask])) * 100 if mask.sum() > 0 else 0.0
             
-            train_set, val_set, test, sub, feature_cols, scaler, le_store, le_family = load_and_process_data(train_file, test_file, sub_file)
+            # Process data
+            train_set, val_set, test, sub, feature_cols, scaler, le_store, le_family = load_and_process_data(
+                train_file, test_file, sub_file
+            )
             
+            # Store in session state
             st.session_state.train_set = train_set
             st.session_state.val_set = val_set
             st.session_state.test = test
@@ -225,6 +165,7 @@ with training_tab:
             st.session_state.le_store = le_store
             st.session_state.le_family = le_family
             
+            # Train models
             for model_name in selected_models:
                 st.write(f"Generating predictions for {model_name}...")
                 temp_dir = tempfile.gettempdir()
@@ -281,7 +222,7 @@ with training_tab:
                             model.fit(X_train, y_train)
                             preds_log = model.predict(X_val)
                             preds = np.expm1(preds_log).clip(0)
-                            joblib.dump(model, os.path.join(temp_dir, f"{model_name.lower()}_{store}_{family}.pt"))
+                            joblib.dump(model, f"{temp_dir}/{model_name.lower()}_{store}_{family}.pt")
                         
                         elif model_name == "ETS":
                             from statsmodels.tsa.holtwinters import ExponentialSmoothing
@@ -314,10 +255,11 @@ with training_tab:
                     preds = np.clip(preds, 0, None)
                     pred_dict[(store, family)] = {'dates': dates, 'actuals': actuals, 'preds': preds}
                 
+                # Calculate metrics
                 from sklearn.metrics import mean_squared_error, mean_absolute_error
                 all_actuals = []
                 all_preds = []
-                for key, data in pred_dict.items():
+                for data in pred_dict.values():
                     all_actuals.extend(data['actuals'])
                     all_preds.extend(data['preds'])
                 
@@ -328,6 +270,7 @@ with training_tab:
                     'mape': clipped_mape(all_actuals, all_preds)
                 }
                 
+                # Plot predictions
                 n_plot = min(100, len(all_actuals))
                 plt.figure(figsize=(10, 5))
                 plt.plot(dates[:n_plot], all_actuals[:n_plot], label='Actual')
@@ -338,16 +281,18 @@ with training_tab:
                 plt.legend()
                 plt.xticks(rotation=45)
                 plt.tight_layout()
-                plot_path = os.path.join(temp_dir, f"{model_name.lower()}_pred.png")
+                plot_path = f"{temp_dir}/{model_name.lower()}_pred.png"
                 plt.savefig(plot_path)
                 plt.close()
                 
+                # Store results
                 st.session_state.model_results[model_name] = {
                     'metrics': metrics,
                     'plot_path': plot_path,
                     'pred_dict': pred_dict
                 }
                 
+                # Display metrics
                 st.write(f"### {model_name} Metrics")
                 col1, col2, col3, col4 = st.columns(4)
                 col1.metric("RMSLE", f"{metrics['rmsle']:.4f}")
@@ -367,7 +312,8 @@ with prediction_tab:
         st.subheader("Visualize Predictions vs Actual")
         store_nbr = st.selectbox("Select Store Number", store_nbrs, key="viz_store")
         family = st.selectbox("Select Product Family", families, key="viz_family")
-        selected_models = st.multiselect("Select Models to Visualize", models, default=["ARIMA"], key="viz_models")
+        selected_models = st.multiselect("Select Models to Visualize", models, 
+                                        default=["ARIMA"], key="viz_models")
         
         if selected_models:
             for model_name in selected_models:
@@ -394,7 +340,7 @@ with prediction_tab:
                         plt.legend()
                         plt.xticks(rotation=45)
                         plt.tight_layout()
-                        plot_path = os.path.join(tempfile.gettempdir(), f"{model_name.lower()}_custom_pred.png")
+                        plot_path = f"{tempfile.gettempdir()}/{model_name.lower()}_custom_pred.png"
                         plt.savefig(plot_path)
                         plt.close()
                         
@@ -436,15 +382,10 @@ with specific_prediction_tab:
         
         if predict_button:
             with st.spinner("Generating prediction..."):
-                spec_data = []
-                for date in target_dates:
-                    spec_data.append({
-                        'store_nbr': store_nbr,
-                        'family': family,
-                        'date': date,
-                        'onpromotion': onpromotion,
-                        'is_train': 0
-                    })
+                spec_data = [
+                    {'store_nbr': store_nbr, 'family': family, 'date': date, 'onpromotion': onpromotion, 'is_train': 0}
+                    for date in target_dates
+                ]
                 spec_df = pd.DataFrame(spec_data)
                 
                 spec_df['day'] = spec_df['date'].dt.day.astype('int8')
@@ -453,19 +394,23 @@ with specific_prediction_tab:
                 spec_df['store_nbr_encoded'] = st.session_state.le_store.transform([store_nbr] * len(spec_df)).astype('int8')
                 spec_df['family_encoded'] = st.session_state.le_family.transform([family] * len(spec_df)).astype('int8')
                 
-                train_group = st.session_state.train_set[(st.session_state.train_set['store_nbr'] == store_nbr) & 
-                                                        (st.session_state.train_set['family'] == family)]
+                train_group = st.session_state.train_set[
+                    (st.session_state.train_set['store_nbr'] == store_nbr) & 
+                    (st.session_state.train_set['family'] == family)
+                ]
                 combined = pd.concat([train_group, spec_df]).sort_values(['store_nbr', 'family', 'date'])
                 combined['lag_7'] = combined.groupby(['store_nbr', 'family'])['sales'].shift(7).fillna(0).astype('float32')
                 spec_df = combined[combined['date'].isin(target_dates)]
                 
-                spec_df[st.session_state.feature_cols] = st.session_state.scaler.transform(spec_df[st.session_state.feature_cols]).astype('float32')
+                spec_df[st.session_state.feature_cols] = st.session_state.scaler.transform(
+                    spec_df[st.session_state.feature_cols]
+                ).astype('float32')
                 
                 for model_name in selected_models:
                     st.subheader(f"{model_name} Prediction")
                     if model_name in ["XGBoost", "LightGBM", "Random Forest"]:
                         import joblib
-                        model_path = os.path.join(tempfile.gettempdir(), f"{model_name.lower()}_{store_nbr}_{family}.pt")
+                        model_path = f"{tempfile.gettempdir()}/{model_name.lower()}_{store_nbr}_{family}.pt"
                         model = joblib.load(model_path)
                         X_spec = spec_df[st.session_state.feature_cols]
                         predictions_log = model.predict(X_spec)
@@ -532,7 +477,7 @@ with specific_prediction_tab:
                     plt.legend()
                     plt.xticks(rotation=45)
                     plt.tight_layout()
-                    plot_path = os.path.join(tempfile.gettempdir(), f"{model_name.lower()}_spec_pred.png")
+                    plot_path = f"{tempfile.gettempdir()}/{model_name.lower()}_spec_pred.png"
                     plt.savefig(plot_path)
                     plt.close()
                     
@@ -567,15 +512,10 @@ with forecasting_tab:
         
         if forecast_button:
             with st.spinner("Generating forecast..."):
-                forecast_data = []
-                for date in target_dates:
-                    forecast_data.append({
-                        'store_nbr': store_nbr,
-                        'family': family,
-                        'date': date,
-                        'onpromotion': onpromotion,
-                        'is_train': 0
-                    })
+                forecast_data = [
+                    {'store_nbr': store_nbr, 'family': family, 'date': date, 'onpromotion': onpromotion, 'is_train': 0}
+                    for date in target_dates
+                ]
                 forecast_df = pd.DataFrame(forecast_data)
                 
                 forecast_df['day'] = forecast_df['date'].dt.day.astype('int8')
@@ -584,19 +524,23 @@ with forecasting_tab:
                 forecast_df['store_nbr_encoded'] = st.session_state.le_store.transform([store_nbr] * len(forecast_df)).astype('int8')
                 forecast_df['family_encoded'] = st.session_state.le_family.transform([family] * len(forecast_df)).astype('int8')
                 
-                train_group = st.session_state.train_set[(st.session_state.train_set['store_nbr'] == store_nbr) & 
-                                                        (st.session_state.train_set['family'] == family)]
+                train_group = st.session_state.train_set[
+                    (st.session_state.train_set['store_nbr'] == store_nbr) & 
+                    (st.session_state.train_set['family'] == family)
+                ]
                 combined = pd.concat([train_group, forecast_df]).sort_values(['store_nbr', 'family', 'date'])
                 combined['lag_7'] = combined.groupby(['store_nbr', 'family'])['sales'].shift(7).fillna(0).astype('float32')
                 forecast_df = combined[combined['date'].isin(target_dates)]
                 
-                forecast_df[st.session_state.feature_cols] = st.session_state.scaler.transform(forecast_df[st.session_state.feature_cols]).astype('float32')
+                forecast_df[st.session_state.feature_cols] = st.session_state.scaler.transform(
+                    forecast_df[st.session_state.feature_cols]
+                ).astype('float32')
                 
                 for model_name in selected_models:
                     st.subheader(f"{model_name} Forecast")
                     if model_name in ["XGBoost", "LightGBM", "Random Forest"]:
                         import joblib
-                        model_path = os.path.join(tempfile.gettempdir(), f"{model_name.lower()}_{store_nbr}_{family}.pt")
+                        model_path = f"{tempfile.gettempdir()}/{model_name.lower()}_{store_nbr}_{family}.pt"
                         model = joblib.load(model_path)
                         X_forecast = forecast_df[st.session_state.feature_cols]
                         predictions_log = model.predict(X_forecast)
@@ -663,7 +607,7 @@ with forecasting_tab:
                     plt.legend()
                     plt.xticks(rotation=45)
                     plt.tight_layout()
-                    plot_path = os.path.join(tempfile.gettempdir(), f"{model_name.lower()}_forecast.png")
+                    plot_path = f"{tempfile.gettempdir()}/{model_name.lower()}_forecast.png"
                     plt.savefig(plot_path)
                     plt.close()
                     
