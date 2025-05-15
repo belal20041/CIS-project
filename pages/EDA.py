@@ -119,28 +119,47 @@ def plot_missingness(df):
     )
     return fig
 
-def plot_sales_trends(df, date_col, granularity='D', family_filter=None):
+def plot_sales_trends(df, date_col, granularity='D', family_filter=None, date_range=None):
+    # Filter by family if specified
     if family_filter:
         df = df[df['family'] == family_filter]
+    
+    # Filter by date range if specified
+    if date_range:
+        start_date, end_date = date_range
+        df = df[(df[date_col] >= start_date) & (df[date_col] <= end_date)]
+    
+    # Group by the specified granularity
     sales_by_date = df.groupby(pd.Grouper(key=date_col, freq=granularity))['sales'].sum().reset_index()
     fig = px.line(sales_by_date, x=date_col, y='sales', title=f"Total Sales Trends ({granularity}ly)",
                   labels={'sales': 'Total Sales', date_col: 'Date'}, color_discrete_sequence=['blue'])
+    
+    # Add vertical lines for holidays
     holidays = df[df['type_y'] == 'Holiday'][date_col].unique()
     for holiday in holidays:
-        fig.add_vline(x=holiday, line=dict(color="red", dash="dash"), annotation_text="Holiday", annotation_position="top")
+        # Convert Timestamp to string to match x-axis format
+        holiday_str = holiday.strftime('%Y-%m-%d')
+        fig.add_vline(x=holiday_str, line=dict(color="red", dash="dash"), annotation_text="Holiday", annotation_position="top")
+    
     fig.update_layout(xaxis=dict(tickangle=45), yaxis_gridcolor='lightgray')
     return fig
 
-def plot_weekly_trends(df, date_col, family_filter=None):
+def plot_weekly_trends(df, date_col, family_filter=None, date_range=None):
     if family_filter:
         df = df[df['family'] == family_filter]
+    if date_range:
+        start_date, end_date = date_range
+        df = df[(df[date_col] >= start_date) & (df[date_col] <= end_date)]
     df_weekly = df.set_index(date_col)['sales'].resample('W').sum().reset_index()
     fig = px.line(df_weekly, x=date_col, y='sales', title="Weekly Sales Trends",
                   labels={'sales': 'Total Sales', date_col: 'Date'}, color_discrete_sequence=['blue'])
     fig.update_layout(xaxis=dict(tickangle=45), yaxis_gridcolor='lightgray')
     return fig
 
-def plot_sales_by_family(df, color_scale='Blues'):
+def plot_sales_by_family(df, color_scale='Blues', date_range=None):
+    if date_range:
+        start_date, end_date = date_range
+        df = df[(df['date'] >= start_date) & (df['date'] <= end_date)]
     df = reclassify_family(df.copy())
     sales_by_family = df.groupby('family')['sales'].mean().sort_values(ascending=False).reset_index()
     fig = px.bar(sales_by_family, y='family', x='sales', orientation='h', title="Average Sales by Product Category",
@@ -148,14 +167,20 @@ def plot_sales_by_family(df, color_scale='Blues'):
     fig.update_layout(yaxis=dict(autorange="reversed"), xaxis_gridcolor='lightgray')
     return fig
 
-def plot_sales_by_store(df, color_scale='Blues'):
+def plot_sales_by_store(df, color_scale='Blues', date_range=None):
+    if date_range:
+        start_date, end_date = date_range
+        df = df[(df['date'] >= start_date) & (df['date'] <= end_date)]
     sales_by_store = df.groupby('store_nbr')['sales'].mean().sort_values(ascending=False).reset_index()
     fig = px.bar(sales_by_store, x='store_nbr', y='sales', title="Average Sales by Store Number",
                  labels={'sales': 'Average Sales', 'store_nbr': 'Store Number'}, color='sales', color_continuous_scale=color_scale)
     fig.update_layout(xaxis=dict(tickangle=45), yaxis_gridcolor='lightgray')
     return fig
 
-def plot_sales_by_city_state(df, color_scale='Blues'):
+def plot_sales_by_city_state(df, color_scale='Blues', date_range=None):
+    if date_range:
+        start_date, end_date = date_range
+        df = df[(df['date'] >= start_date) & (df['date'] <= end_date)]
     df['city_state'] = df['city'] + '_' + df['state']
     sales_by_city_state = df.groupby('city_state')['sales'].mean().sort_values(ascending=False).reset_index()
     fig = px.bar(sales_by_city_state, y='city_state', x='sales', orientation='h', title="Average Sales by City-State",
@@ -163,7 +188,10 @@ def plot_sales_by_city_state(df, color_scale='Blues'):
     fig.update_layout(yaxis=dict(autorange="reversed"), xaxis_gridcolor='lightgray')
     return fig
 
-def plot_sales_by_type_locale(df):
+def plot_sales_by_type_locale(df, date_range=None):
+    if date_range:
+        start_date, end_date = date_range
+        df = df[(df['date'] >= start_date) & (df['date'] <= end_date)]
     df['type_locale'] = df['type_y'] + '_' + df['locale']
     sales_by_type_locale = df.groupby('type_locale')['sales'].mean().reset_index()
     fig = px.pie(sales_by_type_locale, names='type_locale', values='sales', title="Sales Distribution by Type-Locale",
@@ -171,19 +199,28 @@ def plot_sales_by_type_locale(df):
     fig.update_traces(textinfo='percent+label', pull=[0.1 if i == sales_by_type_locale['sales'].idxmax() else 0 for i in range(len(sales_by_type_locale))])
     return fig
 
-def plot_promotion_impact(df, color_scheme='Bold'):
+def plot_promotion_impact(df, color_scheme='Bold', date_range=None):
+    if date_range:
+        start_date, end_date = date_range
+        df = df[(df['date'] >= start_date) & (df['date'] <= end_date)]
     fig = px.box(df, x='onpromotion', y='sales', color='family', title="Sales Distribution by Promotion (by Family)",
                  labels={'sales': 'Sales', 'onpromotion': 'On Promotion (0 = No, 1 = Yes)'}, color_discrete_sequence=getattr(px.colors.qualitative, color_scheme))
     fig.update_layout(xaxis=dict(tickmode='linear'), yaxis_gridcolor='lightgray', legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
     return fig
 
-def plot_sales_vs_oil(df):
+def plot_sales_vs_oil(df, date_range=None):
+    if date_range:
+        start_date, end_date = date_range
+        df = df[(df['date'] >= start_date) & (df['date'] <= end_date)]
     fig = px.scatter(df, x='dcoilwtico', y='sales', trendline="ols", title="Sales vs. Oil Price with Trend",
                      labels={'sales': 'Sales', 'dcoilwtico': 'Oil Price (dcoilwtico)'}, color_discrete_sequence=['blue'])
     fig.update_layout(yaxis_gridcolor='lightgray')
     return fig
 
-def plot_monthly_seasonality(df, color_scheme='Pastel'):
+def plot_monthly_seasonality(df, color_scheme='Pastel', date_range=None):
+    if date_range:
+        start_date, end_date = date_range
+        df = df[(df['date'] >= start_date) & (df['date'] <= end_date)]
     df['month'] = df['date'].dt.month
     sales_by_month = df.groupby(['month', 'family'])['sales'].mean().reset_index()
     fig = px.box(sales_by_month, x='month', y='sales', color='family', title="Average Monthly Sales by Family",
@@ -191,7 +228,10 @@ def plot_monthly_seasonality(df, color_scheme='Pastel'):
     fig.update_layout(xaxis=dict(tickmode='linear'), yaxis_gridcolor='lightgray', legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
     return fig
 
-def plot_dow_patterns(df, color_scheme='Pastel'):
+def plot_dow_patterns(df, color_scheme='Pastel', date_range=None):
+    if date_range:
+        start_date, end_date = date_range
+        df = df[(df['date'] >= start_date) & (df['date'] <= end_date)]
     df['dow'] = df['date'].dt.dayofweek
     sales_by_dow = df.groupby(['dow', 'family'])['sales'].mean().reset_index()
     fig = px.box(sales_by_dow, x='dow', y='sales', color='family', title="Average Sales by Day of Week (by Family)",
@@ -199,7 +239,10 @@ def plot_dow_patterns(df, color_scheme='Pastel'):
     fig.update_layout(xaxis=dict(tickmode='linear'), yaxis_gridcolor='lightgray', legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
     return fig
 
-def plot_seasonal_decomposition(df, date_col):
+def plot_seasonal_decomposition(df, date_col, date_range=None):
+    if date_range:
+        start_date, end_date = date_range
+        df = df[(df[date_col] >= start_date) & (df[date_col] <= end_date)]
     df_ts = df.set_index(date_col)['sales'].resample('M').sum()
     if len(df_ts) >= 24:
         decomp = seasonal_decompose(df_ts, model='additive', period=12)
@@ -212,7 +255,10 @@ def plot_seasonal_decomposition(df, date_col):
     st.warning("Not enough data for seasonal decomposition (requires at least 24 months).")
     return None
 
-def plot_autocorrelation(df, target_col):
+def plot_autocorrelation(df, target_col, date_range=None):
+    if date_range:
+        start_date, end_date = date_range
+        df = df[(df['date'] >= start_date) & (df['date'] <= end_date)]
     n_lags = 30
     acf_vals, acf_confint = acf(df[target_col].dropna(), nlags=n_lags, alpha=0.05, fft=False)
     fig = go.Figure()
@@ -222,7 +268,10 @@ def plot_autocorrelation(df, target_col):
     fig.update_layout(title="Autocorrelation (ACF) of Sales", xaxis_title="Lag", yaxis_title="Autocorrelation", yaxis_gridcolor='lightgray')
     return fig
 
-def plot_partial_autocorrelation(df, target_col):
+def plot_partial_autocorrelation(df, target_col, date_range=None):
+    if date_range:
+        start_date, end_date = date_range
+        df = df[(df['date'] >= start_date) & (df['date'] <= end_date)]
     n_lags = 30
     pacf_vals, pacf_confint = pacf(df[target_col].dropna(), nlags=n_lags, alpha=0.05)
     fig = go.Figure()
@@ -232,14 +281,20 @@ def plot_partial_autocorrelation(df, target_col):
     fig.update_layout(title="Partial Autocorrelation (PACF) of Sales", xaxis_title="Lag", yaxis_title="Partial Autocorrelation", yaxis_gridcolor='lightgray')
     return fig
 
-def plot_lag_plot(df, target_col):
+def plot_lag_plot(df, target_col, date_range=None):
+    if date_range:
+        start_date, end_date = date_range
+        df = df[(df['date'] >= start_date) & (df['date'] <= end_date)]
     lag = 1
     fig = px.scatter(df, x=target_col.shift(lag), y=target_col, trendline="ols", title=f"Lag Plot (Lag={lag})",
                      labels={f"{target_col}.shift({lag})": f"Sales (t-{lag})", target_col: "Sales (t)"}, color_discrete_sequence=['blue'])
     fig.update_layout(yaxis_gridcolor='lightgray')
     return fig
 
-def plot_periodogram(df, target_col):
+def plot_periodogram(df, target_col, date_range=None):
+    if date_range:
+        start_date, end_date = date_range
+        df = df[(df['date'] >= start_date) & (df['date'] <= end_date)]
     freq, psd = periodogram(df[target_col].dropna())
     fig = px.line(x=freq, y=psd, title="Periodogram of Sales",
                   labels={'x': 'Frequency', 'y': 'Power Spectral Density'}, color_discrete_sequence=['blue'])
@@ -247,7 +302,10 @@ def plot_periodogram(df, target_col):
     fig.update_layout(yaxis_gridcolor='lightgray')
     return fig
 
-def plot_rolling_stats(df, date_col, target_col):
+def plot_rolling_stats(df, date_col, target_col, date_range=None):
+    if date_range:
+        start_date, end_date = date_range
+        df = df[(df[date_col] >= start_date) & (df[date_col] <= end_date)]
     rolling = df.set_index(date_col)[target_col].rolling(window=30).agg(['mean', 'std']).dropna().reset_index()
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=rolling[date_col], y=rolling['mean'], name="Mean", line=dict(color="blue")))
@@ -256,7 +314,10 @@ def plot_rolling_stats(df, date_col, target_col):
     fig.update_layout(title="Rolling Mean and Std (30 Days)", xaxis_title="Date", yaxis_title="Sales", yaxis_gridcolor='lightgray')
     return fig
 
-def plot_sales_heatmap(df):
+def plot_sales_heatmap(df, date_range=None):
+    if date_range:
+        start_date, end_date = date_range
+        df = df[(df['date'] >= start_date) & (df['date'] <= end_date)]
     pivot_data = df.pivot_table(values='sales', index='store_nbr', columns='family', aggfunc='sum', fill_value=0)
     fig = px.imshow(pivot_data, text_auto=True, aspect="auto", title="Sales Heatmap: Stores vs. Product Families",
                     labels={'x': 'Product Family', 'y': 'Store Number'}, color_continuous_scale='YlOrRd')
@@ -307,69 +368,86 @@ def main():
                 # Configuration for each selected plot
                 for plot in selected_plots:
                     with st.expander(f"Configure {plot}", expanded=True):
+                        # Add date range picker for all plots
+                        date_range = None
+                        if plot != "Missingness Matrix":  # Missingness Matrix doesn't need date filtering
+                            min_date = train[st.session_state['train_date_col']].min()
+                            max_date = train[st.session_state['train_date_col']].max()
+                            date_range = st.date_input(
+                                "Select Date Range",
+                                value=(min_date, max_date),
+                                min_value=min_date,
+                                max_value=max_date,
+                                key=f"{plot}_date_range"
+                            )
+                            if len(date_range) == 2:
+                                date_range = (pd.to_datetime(date_range[0]), pd.to_datetime(date_range[1]))
+                            else:
+                                date_range = None
+
                         if plot == "Missingness Matrix":
                             fig = plot_missingness(train)
                             st.plotly_chart(fig)
                         elif plot == "Sales Trends":
                             granularity = st.selectbox("Time Granularity", ['D', 'W', 'M'], index=0, key=f"{plot}_granularity")
                             family_filter = st.selectbox("Filter by Family (optional)", [None] + train['family'].unique().tolist(), index=0, key=f"{plot}_family")
-                            fig = plot_sales_trends(train, st.session_state['train_date_col'], granularity, family_filter)
+                            fig = plot_sales_trends(train, st.session_state['train_date_col'], granularity, family_filter, date_range)
                             st.plotly_chart(fig)
                         elif plot == "Weekly Trends":
                             family_filter = st.selectbox("Filter by Family (optional)", [None] + train['family'].unique().tolist(), index=0, key=f"{plot}_family")
-                            fig = plot_weekly_trends(train, st.session_state['train_date_col'], family_filter)
+                            fig = plot_weekly_trends(train, st.session_state['train_date_col'], family_filter, date_range)
                             st.plotly_chart(fig)
                         elif plot == "Sales by Family":
                             color_scale = st.selectbox("Color Scale", ['Blues', 'Reds', 'Greens'], index=0, key=f"{plot}_color")
-                            fig = plot_sales_by_family(train, color_scale)
+                            fig = plot_sales_by_family(train, color_scale, date_range)
                             st.plotly_chart(fig)
                         elif plot == "Sales by Store":
                             color_scale = st.selectbox("Color Scale", ['Blues', 'Reds', 'Greens'], index=0, key=f"{plot}_color")
-                            fig = plot_sales_by_store(train, color_scale)
+                            fig = plot_sales_by_store(train, color_scale, date_range)
                             st.plotly_chart(fig)
                         elif plot == "Sales by City-State":
                             color_scale = st.selectbox("Color Scale", ['Blues', 'Reds', 'Greens'], index=0, key=f"{plot}_color")
-                            fig = plot_sales_by_city_state(train, color_scale)
+                            fig = plot_sales_by_city_state(train, color_scale, date_range)
                             st.plotly_chart(fig)
                         elif plot == "Sales by Type-Locale":
-                            fig = plot_sales_by_type_locale(train)
+                            fig = plot_sales_by_type_locale(train, date_range)
                             st.plotly_chart(fig)
                         elif plot == "Promotion Impact":
                             color_scheme = st.selectbox("Color Scheme", ['Bold', 'Pastel', 'Dark'], index=0, key=f"{plot}_color")
-                            fig = plot_promotion_impact(train, color_scheme)
+                            fig = plot_promotion_impact(train, color_scheme, date_range)
                             st.plotly_chart(fig)
                         elif plot == "Sales vs. Oil Price":
-                            fig = plot_sales_vs_oil(train)
+                            fig = plot_sales_vs_oil(train, date_range)
                             st.plotly_chart(fig)
                         elif plot == "Monthly Seasonality":
                             color_scheme = st.selectbox("Color Scheme", ['Pastel', 'Bold', 'Dark'], index=0, key=f"{plot}_color")
-                            fig = plot_monthly_seasonality(train, color_scheme)
+                            fig = plot_monthly_seasonality(train, color_scheme, date_range)
                             st.plotly_chart(fig)
                         elif plot == "Day-of-Week Patterns":
                             color_scheme = st.selectbox("Color Scheme", ['Pastel', 'Bold', 'Dark'], index=0, key=f"{plot}_color")
-                            fig = plot_dow_patterns(train, color_scheme)
+                            fig = plot_dow_patterns(train, color_scheme, date_range)
                             st.plotly_chart(fig)
                         elif plot == "Seasonal Decomposition":
-                            fig = plot_seasonal_decomposition(train, st.session_state['train_date_col'])
+                            fig = plot_seasonal_decomposition(train, st.session_state['train_date_col'], date_range)
                             if fig:
                                 st.plotly_chart(fig)
                         elif plot == "Autocorrelation (ACF)":
-                            fig = plot_autocorrelation(train, st.session_state['train_target_col'])
+                            fig = plot_autocorrelation(train, st.session_state['train_target_col'], date_range)
                             st.plotly_chart(fig)
                         elif plot == "Partial Autocorrelation (PACF)":
-                            fig = plot_partial_autocorrelation(train, st.session_state['train_target_col'])
+                            fig = plot_partial_autocorrelation(train, st.session_state['train_target_col'], date_range)
                             st.plotly_chart(fig)
                         elif plot == "Lag Plot":
-                            fig = plot_lag_plot(train, st.session_state['train_target_col'])
+                            fig = plot_lag_plot(train, st.session_state['train_target_col'], date_range)
                             st.plotly_chart(fig)
                         elif plot == "Periodogram":
-                            fig = plot_periodogram(train, st.session_state['train_target_col'])
+                            fig = plot_periodogram(train, st.session_state['train_target_col'], date_range)
                             st.plotly_chart(fig)
                         elif plot == "Rolling Statistics":
-                            fig = plot_rolling_stats(train, st.session_state['train_date_col'], st.session_state['train_target_col'])
+                            fig = plot_rolling_stats(train, st.session_state['train_date_col'], st.session_state['train_target_col'], date_range)
                             st.plotly_chart(fig)
                         elif plot == "Sales Heatmap":
-                            fig = plot_sales_heatmap(train)
+                            fig = plot_sales_heatmap(train, date_range)
                             st.plotly_chart(fig)
 
                 csv_data, mime = get_download_file(train, "train_processed.csv")
@@ -415,69 +493,86 @@ def main():
                 # Configuration for each selected plot
                 for plot in selected_plots:
                     with st.expander(f"Configure {plot}", expanded=True):
+                        # Add date range picker for all plots
+                        date_range = None
+                        if plot != "Missingness Matrix":
+                            min_date = test[st.session_state['test_date_col']].min()
+                            max_date = test[st.session_state['test_date_col']].max()
+                            date_range = st.date_input(
+                                "Select Date Range",
+                                value=(min_date, max_date),
+                                min_value=min_date,
+                                max_value=max_date,
+                                key=f"{plot}_date_range_test"
+                            )
+                            if len(date_range) == 2:
+                                date_range = (pd.to_datetime(date_range[0]), pd.to_datetime(date_range[1]))
+                            else:
+                                date_range = None
+
                         if plot == "Missingness Matrix":
                             fig = plot_missingness(test)
                             st.plotly_chart(fig)
                         elif plot == "Sales Trends":
-                            granularity = st.selectbox("Time Granularity", ['D', 'W', 'M'], index=0, key=f"{plot}_granularity")
-                            family_filter = st.selectbox("Filter by Family (optional)", [None] + test['family'].unique().tolist(), index=0, key=f"{plot}_family")
-                            fig = plot_sales_trends(test, st.session_state['test_date_col'], granularity, family_filter)
+                            granularity = st.selectbox("Time Granularity", ['D', 'W', 'M'], index=0, key=f"{plot}_granularity_test")
+                            family_filter = st.selectbox("Filter by Family (optional)", [None] + test['family'].unique().tolist(), index=0, key=f"{plot}_family_test")
+                            fig = plot_sales_trends(test, st.session_state['test_date_col'], granularity, family_filter, date_range)
                             st.plotly_chart(fig)
                         elif plot == "Weekly Trends":
-                            family_filter = st.selectbox("Filter by Family (optional)", [None] + test['family'].unique().tolist(), index=0, key=f"{plot}_family")
-                            fig = plot_weekly_trends(test, st.session_state['test_date_col'], family_filter)
+                            family_filter = st.selectbox("Filter by Family (optional)", [None] + test['family'].unique().tolist(), index=0, key=f"{plot}_family_test")
+                            fig = plot_weekly_trends(test, st.session_state['test_date_col'], family_filter, date_range)
                             st.plotly_chart(fig)
                         elif plot == "Sales by Family":
-                            color_scale = st.selectbox("Color Scale", ['Blues', 'Reds', 'Greens'], index=0, key=f"{plot}_color")
-                            fig = plot_sales_by_family(test, color_scale)
+                            color_scale = st.selectbox("Color Scale", ['Blues', 'Reds', 'Greens'], index=0, key=f"{plot}_color_test")
+                            fig = plot_sales_by_family(test, color_scale, date_range)
                             st.plotly_chart(fig)
                         elif plot == "Sales by Store":
-                            color_scale = st.selectbox("Color Scale", ['Blues', 'Reds', 'Greens'], index=0, key=f"{plot}_color")
-                            fig = plot_sales_by_store(test, color_scale)
+                            color_scale = st.selectbox("Color Scale", ['Blues', 'Reds', 'Greens'], index=0, key=f"{plot}_color_test")
+                            fig = plot_sales_by_store(test, color_scale, date_range)
                             st.plotly_chart(fig)
                         elif plot == "Sales by City-State":
-                            color_scale = st.selectbox("Color Scale", ['Blues', 'Reds', 'Greens'], index=0, key=f"{plot}_color")
-                            fig = plot_sales_by_city_state(test, color_scale)
+                            color_scale = st.selectbox("Color Scale", ['Blues', 'Reds', 'Greens'], index=0, key=f"{plot}_color_test")
+                            fig = plot_sales_by_city_state(test, color_scale, date_range)
                             st.plotly_chart(fig)
                         elif plot == "Sales by Type-Locale":
-                            fig = plot_sales_by_type_locale(test)
+                            fig = plot_sales_by_type_locale(test, date_range)
                             st.plotly_chart(fig)
                         elif plot == "Promotion Impact":
-                            color_scheme = st.selectbox("Color Scheme", ['Bold', 'Pastel', 'Dark'], index=0, key=f"{plot}_color")
-                            fig = plot_promotion_impact(test, color_scheme)
+                            color_scheme = st.selectbox("Color Scheme", ['Bold', 'Pastel', 'Dark'], index=0, key=f"{plot}_color_test")
+                            fig = plot_promotion_impact(test, color_scheme, date_range)
                             st.plotly_chart(fig)
                         elif plot == "Sales vs. Oil Price":
-                            fig = plot_sales_vs_oil(test)
+                            fig = plot_sales_vs_oil(test, date_range)
                             st.plotly_chart(fig)
                         elif plot == "Monthly Seasonality":
-                            color_scheme = st.selectbox("Color Scheme", ['Pastel', 'Bold', 'Dark'], index=0, key=f"{plot}_color")
-                            fig = plot_monthly_seasonality(test, color_scheme)
+                            color_scheme = st.selectbox("Color Scheme", ['Pastel', 'Bold', 'Dark'], index=0, key=f"{plot}_color_test")
+                            fig = plot_monthly_seasonality(test, color_scheme, date_range)
                             st.plotly_chart(fig)
                         elif plot == "Day-of-Week Patterns":
-                            color_scheme = st.selectbox("Color Scheme", ['Pastel', 'Bold', 'Dark'], index=0, key=f"{plot}_color")
-                            fig = plot_dow_patterns(test, color_scheme)
+                            color_scheme = st.selectbox("Color Scheme", ['Pastel', 'Bold', 'Dark'], index=0, key=f"{plot}_color_test")
+                            fig = plot_dow_patterns(test, color_scheme, date_range)
                             st.plotly_chart(fig)
                         elif plot == "Seasonal Decomposition":
-                            fig = plot_seasonal_decomposition(test, st.session_state['test_date_col'])
+                            fig = plot_seasonal_decomposition(test, st.session_state['test_date_col'], date_range)
                             if fig:
                                 st.plotly_chart(fig)
                         elif plot == "Autocorrelation (ACF)":
-                            fig = plot_autocorrelation(test, st.session_state.get('train_target_col', None))
+                            fig = plot_autocorrelation(test, st.session_state.get('train_target_col', None), date_range)
                             st.plotly_chart(fig)
                         elif plot == "Partial Autocorrelation (PACF)":
-                            fig = plot_partial_autocorrelation(test, st.session_state.get('train_target_col', None))
+                            fig = plot_partial_autocorrelation(test, st.session_state.get('train_target_col', None), date_range)
                             st.plotly_chart(fig)
                         elif plot == "Lag Plot":
-                            fig = plot_lag_plot(test, st.session_state.get('train_target_col', None))
+                            fig = plot_lag_plot(test, st.session_state.get('train_target_col', None), date_range)
                             st.plotly_chart(fig)
                         elif plot == "Periodogram":
-                            fig = plot_periodogram(test, st.session_state.get('train_target_col', None))
+                            fig = plot_periodogram(test, st.session_state.get('train_target_col', None), date_range)
                             st.plotly_chart(fig)
                         elif plot == "Rolling Statistics":
-                            fig = plot_rolling_stats(test, st.session_state['test_date_col'], st.session_state.get('train_target_col', None))
+                            fig = plot_rolling_stats(test, st.session_state['test_date_col'], st.session_state.get('train_target_col', None), date_range)
                             st.plotly_chart(fig)
                         elif plot == "Sales Heatmap":
-                            fig = plot_sales_heatmap(test)
+                            fig = plot_sales_heatmap(test, date_range)
                             st.plotly_chart(fig)
 
                 csv_data, mime = get_download_file(test, "test_processed.csv")
