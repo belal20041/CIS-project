@@ -31,7 +31,7 @@ def load_data(file, date_col, target_col):
     df = pd.read_csv(file)
     df[date_col] = pd.to_datetime(df[date_col])
     df[['store_nbr', 'onpromotion']] = df[['store_nbr', 'onpromotion']].astype('int32')
-    if target_col in df.columns:
+    if target_col and target_col in df.columns:
         df[target_col] = df[target_col].astype('float32')
     df.dropna(subset=[date_col], inplace=True)
     return df
@@ -101,7 +101,7 @@ def explore_data(df, date_col, target_col, numeric_cols, categorical_cols, datas
         st.pyplot(fig)
         plt.close(fig)
 
-        if target_col in df.columns:
+        if target_col and target_col in df.columns:
             fig, ax = plt.subplots(figsize=(8, 3))
             sns.lineplot(x=date_col, y=target_col, data=df, ax=ax)
             plt.xticks(rotation=45)
@@ -188,7 +188,7 @@ def explore_data(df, date_col, target_col, numeric_cols, categorical_cols, datas
             plt.close(fig)
 
         for col in ['family', 'store_nbr']:
-            if col in df.columns and target_col in df.columns:
+            if col in df.columns and target_col and target_col in df.columns:
                 fig, ax = plt.subplots(figsize=(8, 3))
                 sns.boxplot(x=col, y=target_col, data=df, ax=ax)
                 plt.xticks(rotation=45)
@@ -196,14 +196,14 @@ def explore_data(df, date_col, target_col, numeric_cols, categorical_cols, datas
                 st.pyplot(fig)
                 plt.close(fig)
 
-        if target_col in df.columns and 'onpromotion' in df.columns:
+        if target_col and target_col in df.columns and 'onpromotion' in df.columns:
             fig, ax = plt.subplots(figsize=(8, 3))
             sns.boxplot(x='onpromotion', y=target_col, data=df, ax=ax)
             plt.savefig(os.path.join(temp_dir, f"{dataset_type}_promo.png"))
             st.pyplot(fig)
             plt.close(fig)
 
-        if target_col in df.columns:
+        if target_col and target_col in df.columns:
             fig, ax = plt.subplots(figsize=(8, 3))
             sns.histplot(df[target_col], bins=30, kde=True, ax=ax)
             plt.savefig(os.path.join(temp_dir, f"{dataset_type}_dist.png"))
@@ -264,9 +264,9 @@ def main():
 
             with st.form("test_process"):
                 if st.form_submit_button("Run"):
-                    test = load_data(test_file, st.session_state['test_date_col'], '')
+                    test = load_data(test_file, st.session_state['test_date_col'], None)
                     st.session_state['test_df'] = test
-                    explore_data(test, st.session_state['test_date_col'], st.session_state.get('train_target_col', ''), 
+                    explore_data(test, st.session_state['test_date_col'], st.session_state.get('train_target_col'), 
                                  st.session_state['test_numeric_cols'], st.session_state['test_categorical_cols'], "test")
                     st.dataframe(test.head(), height=100)
                     csv_data, mime = get_download_file(test, "test_processed.csv")
@@ -278,7 +278,6 @@ def main():
                 combined = prepare_data(st.session_state['train_df'], st.session_state['test_df'], 
                                        st.session_state['train_date_col'], st.session_state['train_target_col'])
                 combined = fill_missing(combined, st.session_state['train_target_col'])
-                combined = combined.drop(columns=['lag_7', 'lag_14', 'roll_mean_7'], errors='ignore')
                 combined = add_features(combined, st.session_state['train_date_col'], st.session_state['train_target_col'])
                 train_set, val_set, test = split_data(combined, st.session_state['train_date_col'], st.session_state['train_target_col'])
                 st.session_state['train_set'] = train_set
