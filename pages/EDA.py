@@ -29,7 +29,7 @@ def plot_sales_trends(df, date_col, target_col, granularity='D'):
     return fig
 
 def plot_sales_by_family(df, target_col):
-    family_map = {'AUTOMOTIVE': 'Tools', 'HARDWARE': 'Tools', 'LAWN AND GARDEN': 'Tools', 'PLAYERS AND ELECTRONICS': 'Tools', 'BEAUTY': 'LifeStyle', 'LINGERIE': 'LifeStyle', 'LADIESWEAR': 'LifeStyle', 'PERSONAL CARE': "LifeStyle", 'CELEBRATION': 'LifeStyle', 'MAGAZINES': 'LifeStyle', 'BOOKS': 'LifeStyle', 'BABY CARE': 'LifeStyle', 'HOME APPLIANCES': 'Home', 'HOME AND KITCHEN I': 'Home', 'HOME AND KITCHEN II': 'Home', 'HOME CARE': 'Home', 'SCHOOL AND OFFICE SUPPLIES': 'Home', 'GROCERY II': 'Food', 'PET SUPPLIES': 'Food', 'SEAFOOD': 'Food', 'LIQUOR,WINE,BEER': 'Food', 'DELI': 'Daily', 'EGGS': 'Daily'}
+    family_map = {'AUTOMOTIVE': 'Tools', 'HARDWARE': 'Tools', 'LAWN AND GARDEN': 'Tools', 'PLAYERS AND ELECTRONICS': 'Tools', 'BEAUTY': 'LifeStyle', 'LINGERIE': 'LifeStyle', 'LADIESWEAR': 'LifeStyle', 'PERSONAL CARE': 'LifeStyle', 'CELEBRATION': 'LifeStyle', 'MAGAZINES': 'LifeStyle', 'BOOKS': 'LifeStyle', 'BABY CARE': 'LifeStyle', 'HOME APPLIANCES': 'Home', 'HOME AND KITCHEN I': 'Home', 'HOME AND KITCHEN II': 'Home', 'HOME CARE': 'Home', 'SCHOOL AND OFFICE SUPPLIES': 'Home', 'GROCERY II': 'Food', 'PET SUPPLIES': 'Food', 'SEAFOOD': 'Food', 'LIQUOR,WINE,BEER': 'Food', 'DELI': 'Daily', 'EGGS': 'Daily'}
     df['family'] = df['family'].replace(family_map)
     sales = df.groupby('family')[target_col].mean().sort_values().reset_index()
     fig = px.bar(sales, y='family', x=target_col, orientation='h', title="Average Sales by Product Category")
@@ -48,8 +48,9 @@ def plot_promotion_impact(df, target_col):
     return fig
 
 def plot_seasonal_decomposition(df, date_col, target_col):
+    df[date_col] = pd.to_datetime(df[date_col])
     df_agg = df.groupby(date_col)[target_col].sum().reset_index()
-    df_ts = df_agg.set_index(date_col)[target_col].resample('M').sum()
+    df_ts = df_agg.set_index(date_col)[target_col]
     decomp = seasonal_decompose(df_ts, model='additive', period=12)
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=decomp.trend.index, y=decomp.trend, name="Trend", line=dict(color="blue")))
@@ -59,6 +60,7 @@ def plot_seasonal_decomposition(df, date_col, target_col):
     return fig
 
 def plot_rolling_stats(df, date_col, target_col):
+    df[date_col] = pd.to_datetime(df[date_col])
     df_agg = df.groupby(date_col)[target_col].sum().reset_index()
     rolling = df_agg.set_index(date_col)[target_col].rolling(window=30).agg(['mean', 'std']).dropna().reset_index()
     fig = go.Figure()
@@ -68,6 +70,7 @@ def plot_rolling_stats(df, date_col, target_col):
     return fig
 
 def plot_periodogram(df, date_col, target_col):
+    df[date_col] = pd.to_datetime(df[date_col])
     df_agg = df.groupby(date_col)[target_col].sum().reset_index()
     freq, psd = periodogram(df_agg[target_col].dropna())
     fig = px.line(x=freq, y=psd, title="Periodogram of Sales")
@@ -75,6 +78,7 @@ def plot_periodogram(df, date_col, target_col):
     return fig
 
 def plot_lag_plot(df, date_col, target_col):
+    df[date_col] = pd.to_datetime(df[date_col])
     df_agg = df.groupby(date_col)[target_col].sum().reset_index()
     lag = 1
     df_agg[f'{target_col}_lag'] = df_agg[target_col].shift(lag)
@@ -83,6 +87,7 @@ def plot_lag_plot(df, date_col, target_col):
     return fig
 
 def plot_sales_by_dow(df, date_col, target_col):
+    df[date_col] = pd.to_datetime(df[date_col])
     df_agg = df.groupby(date_col)[target_col].sum().reset_index()
     df_agg['dow'] = df_agg[date_col].dt.dayofweek
     sales_by_dow = df_agg.groupby('dow')[target_col].mean().reset_index()
@@ -91,6 +96,7 @@ def plot_sales_by_dow(df, date_col, target_col):
     return fig
 
 def plot_sales_by_month(df, date_col, target_col):
+    df[date_col] = pd.to_datetime(df[date_col])
     df_agg = df.groupby(date_col)[target_col].sum().reset_index()
     df_agg['month'] = df_agg[date_col].dt.month
     sales_by_month = df_agg.groupby('month')[target_col].mean().reset_index()
