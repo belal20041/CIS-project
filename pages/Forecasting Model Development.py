@@ -1,259 +1,300 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from io import BytesIO
+import plotly.express as px
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.metrics import mean_squared_error, mean_absolute_error
 from xgboost import XGBRegressor
-from statsmodels.tsa.statespace.sarimax import SARIMAX
-from prophet import Prophet
-import tensorflow as tf
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense
-import plotly.express as px
-import plotly.graph_objects as go
 
-st.set_page_config(layout="wide")
-st.title("📈 Sales Forecasting Dashboard")
-st.write("Upload your sales data and train or apply forecasting models interactively.")
+# Set page config
+st.set_page_config(page_title="Sales Forecasting App", layout="wide")
 
-# --- Sidebar: File Upload ---
-st.sidebar.header("Upload CSV Files")
-train_file = st.sidebar.file_uploader("Training CSV", type=['csv'], key='train_csv')
-test_file = st.sidebar.file_uploader("Test CSV", type=['csv'], key='test_csv')
-
-# Initialize session state for data storage
+# Initialize session state
 if 'train_df' not in st.session_state:
-    st.session_state.train_df = None
+    st.session_state['train_df'] = None
 if 'test_df' not in st.session_state:
-    st.session_state.test_df = None
+    st.session_state['test_df'] = None
+if 'trained' not in st.session_state:
+    st.session_state['trained'] = False
+if 'models' not in st.session_state:
+    st.session_state['models'] = {}
+if 'predictions' not in st.session_state:
+    st.session_state['predictions'] = None
 
-# Load data into session state on upload
-if train_file is not None:
-    st.session_state.train_df = pd.read_csv(train_file)
-if test_file is not None:
-    st.session_state.test_df = pd.read_csv(test_file)
+# Sidebar: upload data
+st.sidebar.title("Upload Data")
+train_file = st.sidebar.file_uploader("Upload Training CSV", type=["csv"])
+test_file = st.sidebar.file_uploader("Upload Test CSV", type=["csv"])
 
-# Helper to clean and validate a DataFrame
-def clean_and_validate(df, name):
-    # Drop any 'Unnamed:' columns
-    df = df.loc[:, ~df.columns.str.contains('^Unnamed')]
-    # Required columns
-    required = ['id','date','store_nbr','family','sales','onpromotion']
-    missing = [c for c in required if c not in df.columns]
-    if missing:
-        st.error(f"{name}: missing required columns: {missing}")
-        return None
-    # Ensure date column is datetime
-    if not np.issubdtype(df['date'].dtype, np.datetime64):
+# Function to load CSV into session state
+def load_csv(file_uploader, state_key, name_key):
+    if file_uploader is not None:
         try:
-            df['date'] = pd.to_datetime(df['date'])
-        except Exception as e:
-            st.error(f"{name}: could not parse 'date' column as datetime.")
-            return None
-    return df
+            df = pd.read_csv(file_uploader)
+        except Exception:
+            st.sidebar.error(f"Error: Failed to read {name_key} CSV.")
+            return
+        # If new file or changed file, update and reset training flag
+        if (st.session_state[state_key] is None 
+                or (name_key in st.session_state and file_uploader.name != st.session_state[name_key])):
+            st.session_state[state_key] = df
+            st.session_state[name_key] = file_uploader.name
+            st.session_state['trained'] = False
 
-# Clean/validate uploaded data
-train_df = None
-test_df = None
-if st.session_state.train_df is not None:
-    train_df = clean_and_validate(st.session_state.train_df.copy(), "Training data")
-if st.session_state.test_df is not None:
-    test_df = clean_and_validate(st.session_state.test_df.copy(), "Test data")
+load_csv(train_file, 'train_df', 'train_filename')
+load_csv(test_file, 'test_df', 'test_filename')
 
-# Proceed only if training data is loaded and valid
-if train_df is not None:
-    # Tabs for Training and Prediction
-    tab1, tab2 = st.tabs(["Training", "Prediction"])
+if st.session_state['train_df'] is not None:
+    st.sidebar.success(f"Train data loaded: {st.session_state['train_df'].shape[0]} rows")
+if st.session_state['test_df'] is not None:
+    st.sidebar.success(f"Test data loaded: {st.session_state['test_df'].shape[0]} rows")
 
-    # ----------- Training Tab -----------
-    with tab1:
-        st.header("Training")
-        # Show first few rows of training data
-        st.subheader("Training Data Preview")
-        st.dataframe(train_df.head(5))
+# Data preprocessing function
+def preprocess(df_train, df_test):
+    df_train = df_train.loc[:, ~df_train.columns.str.startswith('Unnamed:')].copy()
+    df_test = df_test.loc[:, ~df_test.columns.str.startswith('Unnamed:')].copy()
+    if 'transactions' in df_train.columns:
+        df_train = df_train.drop(columns=['transactions'])
+    # Parse dates
+    df_train['date'] = pd.to_datetime(df_train['date'])
+    df_test['date'] = pd.to_datetime(df_test['date'])
+    # Time-based features
+    for df in [df_train, df_test]:
+        df['month'] = df['date'].dt.month
+        df['day'] = df['date'].dt.day
+        df['weekday'] = df['date'].dt.weekday
+        df['is_weekend'] = (df['weekday'] >= 5).astype(int)
+    # Label-encode categorical columns (fit on combined train+test)
+    cat_cols = ['family', 'city', 'state', 'type_x', 'type_y', 'locale', 'locale_name', 'description']
+    for col in cat_cols:
+        if col in df_train.columns and col in df_test.columns:
+            le = LabelEncoder()
+            combined = pd.concat([df_train[col].astype(str), df_test[col].astype(str)], axis=0)
+            le.fit(combined)
+            df_train[col] = le.transform(df_train[col].astype(str))
+            df_test[col] = le.transform(df_test[col].astype(str))
+    # Lag features (train only)
+    if 'sales' in df_train.columns:
+        df_train = df_train.sort_values(['store_nbr', 'family', 'date'])
+        df_train['lag_7'] = df_train.groupby(['store_nbr','family'])['sales'].shift(7)
+        df_train['lag_14'] = df_train.groupby(['store_nbr','family'])['sales'].shift(14)
+        df_train['lag_7'] = df_train['lag_7'].fillna(0)
+        df_train['lag_14'] = df_train['lag_14'].fillna(0)
+    # Scale numeric features (exclude id, target, and lags)
+    num_cols = df_train.select_dtypes(include=[np.number]).columns.tolist()
+    if 'sales' in num_cols: num_cols.remove('sales')
+    if 'id' in num_cols: num_cols.remove('id')
+    if 'lag_7' in num_cols: num_cols.remove('lag_7')
+    if 'lag_14' in num_cols: num_cols.remove('lag_14')
+    scaler = StandardScaler()
+    df_train[num_cols] = scaler.fit_transform(df_train[num_cols])
+    df_test[num_cols] = scaler.transform(df_test[num_cols])
+    return df_train, df_test, scaler
 
-        # Allow user to select date and target columns
-        date_col = st.selectbox("Select Date Column", options=train_df.columns, index=list(train_df.columns).index('date') if 'date' in train_df.columns else 0)
-        target_col = st.selectbox("Select Target (Sales) Column", options=[col for col in train_df.columns if train_df[col].dtype in [np.int64, np.float64]], index=list(train_df.columns).index('sales') if 'sales' in train_df.columns else 0)
-
-        # When ready, start preprocessing and training
-        if st.button("Preprocess & Train Models"):
-            with st.spinner("Preprocessing data..."):
-                df = train_df.copy()
-                # Rename selected columns to standard names
-                df.rename(columns={date_col: 'date', target_col: 'sales'}, inplace=True)
-                # Sort by date for time series order
-                df.sort_values('date', inplace=True)
-                # Label encode categorical columns
-                cat_cols = df.select_dtypes(include=['object']).columns.drop(['id','date'])
-                for col in cat_cols:
-                    df[col] = LabelEncoder().fit_transform(df[col].astype(str))
-                # Feature engineering: date parts
-                df['month']   = df['date'].dt.month
-                df['day']     = df['date'].dt.day
-                df['weekday'] = df['date'].dt.weekday
-                df['is_weekend'] = df['weekday'].isin([5,6]).astype(int)
-                # Lag features (7-day and 14-day)
-                df['lag_7']  = df.groupby(['store_nbr','family'])['sales'].shift(7)
-                df['lag_14'] = df.groupby(['store_nbr','family'])['sales'].shift(14)
-                df.dropna(subset=['lag_7','lag_14'], inplace=True)
-                # Scaling numeric features (except target)
-                num_cols = df.select_dtypes(include=[np.number]).columns.drop(['id','sales'])
-                scaler = StandardScaler()
-                df[num_cols] = scaler.fit_transform(df[num_cols])
-                st.success("Preprocessing complete.")
-                # Save processed training data
-                st.session_state.processed_train = df
-
-            # Model Training
-            with st.spinner("Training models..."):
-                X = df.drop(columns=['id','date','sales'])
-                y = df['sales'].values
-
-                # --- XGBoost Model ---
-                xgb_model = XGBRegressor(tree_method='hist', verbosity=0)
-                xgb_model.fit(X, y)
-                df['pred_xgb'] = xgb_model.predict(X)
-
-                # --- Prophet Model ---
-                prophet_df = df[['date','sales']].rename(columns={'date':'ds','sales':'y'})
-                m = Prophet()
-                m.fit(prophet_df)
-                future = m.make_future_dataframe(periods=0)  # no extra periods since forecasting training range
-                forecast = m.predict(future)
-                df['pred_prophet'] = forecast['yhat'].values
-
-                # --- ARIMA/SARIMA Model ---
-                # For simplicity, fit on the aggregated series of all stores as an example
+# Button to trigger preprocessing and training
+if (st.session_state['train_df'] is not None 
+        and st.session_state['test_df'] is not None 
+        and not st.session_state['trained']):
+    if st.sidebar.button("Process & Train Models"):
+        with st.spinner("Processing data and training models..."):
+            df_train_raw = st.session_state['train_df']
+            df_test_raw = st.session_state['test_df']
+            if 'sales' not in df_train_raw.columns:
+                st.error("Training data must contain a 'sales' column.")
+            else:
+                # Preprocess data
                 try:
-                    arima_model = SARIMAX(df['sales'], order=(1,1,1), seasonal_order=(1,1,1,7))
-                    arima_res = arima_model.fit(disp=False)
-                    df['pred_arima'] = arima_res.predict(start=0, end=len(df)-1)
+                    df_train_proc, df_test_proc, scaler = preprocess(df_train_raw, df_test_raw)
                 except Exception as e:
-                    st.error(f"ARIMA training failed: {e}")
-                    df['pred_arima'] = np.nan
+                    st.error(f"Data preprocessing error: {e}")
+                    df_train_proc, df_test_proc = None, None
+                if df_train_proc is not None:
+                    # Prepare model inputs
+                    feature_cols = [c for c in df_train_proc.columns 
+                                    if c not in ['id','date','sales','lag_7','lag_14']]
+                    X_train = df_train_proc[feature_cols]
+                    y_train = df_train_proc['sales']
+                    X_test = df_test_proc[feature_cols]
+                    metrics_list = []
+                    preds = {}
+                    # --- XGBoost ---
+                    try:
+                        xgb_model = XGBRegressor(objective='reg:squarederror', n_estimators=100, random_state=42)
+                        xgb_model.fit(X_train, y_train)
+                        st.session_state['models']['XGBoost'] = xgb_model
+                        y_pred_train = xgb_model.predict(X_train)
+                        y_pred_test = xgb_model.predict(X_test)
+                    except Exception:
+                        y_pred_train = np.zeros(len(y_train))
+                        y_pred_test = np.zeros(len(X_test))
+                    preds['XGBoost'] = {'train': y_pred_train, 'test': y_pred_test}
+                    # Compute metrics for XGBoost
+                    y_true = y_train.values
+                    y_pred_clipped = np.maximum(y_pred_train, 0)
+                    try:
+                        rmsle = np.sqrt(mean_squared_error(np.log1p(y_true), np.log1p(y_pred_clipped)))
+                    except Exception:
+                        rmsle = None
+                    rmse = np.sqrt(mean_squared_error(y_true, y_pred_train))
+                    mae = mean_absolute_error(y_true, y_pred_train)
+                    metrics_list.append({'Model': 'XGBoost', 'RMSLE': rmsle, 'RMSE': rmse, 'MAE': mae})
+                    # --- ARIMA on test ---
+                    arima_preds = pd.Series(0.0, index=df_test_proc.index)
+                    try:
+                        from statsmodels.tsa.arima.model import ARIMA
+                        for (store, fam), group in df_test_proc.groupby(['store_nbr','family']):
+                            train_grp = df_train_proc[(df_train_proc['store_nbr']==store) & 
+                                                     (df_train_proc['family']==fam)]
+                            if len(train_grp) < 2:
+                                continue
+                            arima_model = ARIMA(train_grp['sales'], order=(1,1,1))
+                            arima_res = arima_model.fit()
+                            steps = len(group)
+                            pred_vals = arima_res.forecast(steps=steps)
+                            idx = group.sort_values('date').index
+                            arima_preds.loc[idx] = pred_vals.values
+                    except Exception:
+                        arima_preds[:] = 0.0
+                    preds['ARIMA'] = {'train': None, 'test': arima_preds.values}
+                    # --- SARIMA on test ---
+                    sarima_preds = pd.Series(0.0, index=df_test_proc.index)
+                    try:
+                        from statsmodels.tsa.statespace.sarimax import SARIMAX
+                        for (store, fam), group in df_test_proc.groupby(['store_nbr','family']):
+                            train_grp = df_train_proc[(df_train_proc['store_nbr']==store) & 
+                                                     (df_train_proc['family']==fam)]
+                            if len(train_grp) < 2:
+                                continue
+                            sarima_model = SARIMAX(train_grp['sales'], order=(1,1,1), seasonal_order=(1,0,1,7))
+                            sarima_res = sarima_model.fit(disp=False)
+                            steps = len(group)
+                            pred_vals = sarima_res.forecast(steps=steps)
+                            idx = group.sort_values('date').index
+                            sarima_preds.loc[idx] = pred_vals.values
+                    except Exception:
+                        sarima_preds[:] = 0.0
+                    preds['SARIMA'] = {'train': None, 'test': sarima_preds.values}
+                    # --- Prophet on test (global) ---
+                    prophet_preds = [0.0]*len(df_test_proc)
+                    try:
+                        from prophet import Prophet
+                        prophet_df = pd.DataFrame({'ds': df_train_proc['date'], 'y': df_train_proc['sales']})
+                        prophet_model = Prophet()
+                        prophet_model.fit(prophet_df)
+                        max_train = df_train_proc['date'].max()
+                        max_test = df_test_proc['date'].max()
+                        days = max((max_test - max_train).days, 0)
+                        future = prophet_model.make_future_dataframe(periods=days)
+                        forecast = prophet_model.predict(future)
+                        pred_map = dict(zip(forecast['ds'].dt.date, forecast['yhat']))
+                        prophet_preds = [float(pred_map.get(dt.date(), 0.0)) for dt in df_test_proc['date']]
+                    except Exception:
+                        prophet_preds = [0.0]*len(df_test_proc)
+                    preds['Prophet'] = {'train': None, 'test': prophet_preds}
+                    # --- LSTM on train/test ---
+                    try:
+                        import tensorflow as tf
+                        from tensorflow.keras.models import Sequential
+                        from tensorflow.keras.layers import LSTM, Dense
+                        X_train_arr = X_train.values
+                        y_train_arr = y_train.values
+                        X_train_seq = X_train_arr.reshape((X_train_arr.shape[0], 1, X_train_arr.shape[1]))
+                        lstm_model = Sequential()
+                        lstm_model.add(LSTM(50, activation='relu', input_shape=(1, X_train_arr.shape[1])))
+                        lstm_model.add(Dense(1))
+                        lstm_model.compile(optimizer='adam', loss='mse')
+                        lstm_model.fit(X_train_seq, y_train_arr, epochs=5, batch_size=32, verbose=0)
+                        train_pred_lstm = lstm_model.predict(X_train_seq).flatten()
+                        X_test_arr = X_test.values
+                        X_test_seq = X_test_arr.reshape((X_test_arr.shape[0], 1, X_test_arr.shape[1]))
+                        test_pred_lstm = lstm_model.predict(X_test_seq).flatten()
+                    except Exception:
+                        train_pred_lstm = np.zeros(len(df_train_proc))
+                        test_pred_lstm = np.zeros(len(df_test_proc))
+                    preds['LSTM'] = {'train': train_pred_lstm, 'test': test_pred_lstm}
+                    # Compute LSTM metrics
+                    try:
+                        y_pred_lstm = train_pred_lstm
+                        y_pred_lstm_clipped = np.maximum(y_pred_lstm, 0)
+                        rmsle_lstm = np.sqrt(mean_squared_error(np.log1p(y_true), 
+                                           np.log1p(y_pred_lstm_clipped)))
+                        rmse_lstm = np.sqrt(mean_squared_error(y_true, y_pred_lstm))
+                        mae_lstm = mean_absolute_error(y_true, y_pred_lstm)
+                        metrics_list.append({'Model': 'LSTM', 'RMSLE': rmsle_lstm, 
+                                              'RMSE': rmse_lstm, 'MAE': mae_lstm})
+                    except Exception:
+                        pass
+                    # Save processed data, metrics, and predictions in session state
+                    st.session_state['processed_train'] = df_train_proc
+                    st.session_state['processed_test'] = df_test_proc
+                    st.session_state['metrics'] = metrics_list
+                    # Save train predictions for plotting
+                    st.session_state['train_preds'] = {
+                        'XGBoost': y_pred_train,
+                        'LSTM': train_pred_lstm
+                    }
+                    # Prepare predictions DataFrame for test set
+                    pred_df = df_test_proc[['id','date','store_nbr','family']].copy()
+                    for m in preds:
+                        pred_vals = preds[m]['test']
+                        pred_df[m] = pred_vals
+                    st.session_state['predictions'] = pred_df
+                    # Mark training complete
+                    st.session_state['trained'] = True
+        st.success("Models trained.")
+        st.experimental_rerun()
 
-                # --- LSTM Model ---
-                # Reshape X for LSTM: (samples, timesteps=1, features)
-                X_lstm = X.values.reshape((X.shape[0], 1, X.shape[1]))
-                lstm_model = Sequential([LSTM(32, return_sequences=False, input_shape=(1, X.shape[1])), Dense(1)])
-                lstm_model.compile(optimizer='adam', loss='mse')
-                lstm_model.fit(X_lstm, y, epochs=10, verbose=0)
-                df['pred_lstm'] = lstm_model.predict(X_lstm).flatten()
-
-                st.success("Models trained.")
-
-                # Calculate metrics
-                def calc_metrics(y_true, y_pred):
-                    rmse = np.sqrt(mean_squared_error(y_true, y_pred))
-                    mae  = mean_absolute_error(y_true, y_pred)
-                    rmsle = np.sqrt(np.mean((np.log1p(y_pred) - np.log1p(y_true))**2))
-                    return rmse, mae, rmsle
-
-                metrics = {}
-                for model in ['xgb','prophet','arima','lstm']:
-                    if f'pred_{model}' in df:
-                        rmse, mae, rmsle = calc_metrics(df['sales'], df[f'pred_{model}'])
-                        metrics[model] = {'RMSE': rmse, 'MAE': mae, 'RMSLE': rmsle}
-
-                st.subheader("Training Metrics")
-                # Display metrics table
-                if metrics:
-                    met_df = pd.DataFrame(metrics).T[['RMSE','MAE','RMSLE']]
-                    st.table(met_df)
-
-                # Plot actual vs predicted (first 100 points)
-                st.subheader("Actual vs Predicted (first 100 points)")
-                fig = go.Figure()
-                fig.add_trace(go.Scatter(
-                    x=df['date'].head(100), y=df['sales'].head(100),
-                    mode='lines', name='Actual'))
-                # Plot predictions for each model
-                colors = {'pred_xgb':'blue','pred_prophet':'green','pred_arima':'orange','pred_lstm':'purple'}
-                for col in ['pred_xgb','pred_prophet','pred_arima','pred_lstm']:
-                    if col in df:
-                        fig.add_trace(go.Scatter(
-                            x=df['date'].head(100), y=df[col].head(100),
-                            mode='lines', name=col.split('_')[1].title(),
-                            line=dict(color=colors.get(col, None), dash='dot')))
+# Main Interface with tabs
+if st.session_state['train_df'] is not None and st.session_state['test_df'] is not None:
+    tab1, tab2 = st.tabs(["Training", "Prediction"])
+    with tab1:
+        st.header("Training Results")
+        if st.session_state['trained']:
+            # Show metrics table
+            if 'metrics' in st.session_state:
+                try:
+                    metrics_df = pd.DataFrame(st.session_state['metrics'])
+                    st.subheader("Training Metrics")
+                    st.table(metrics_df)
+                except Exception:
+                    pass
+            # Plot actual vs predicted for first 100 points (XGBoost)
+            if 'processed_train' in st.session_state:
+                plot_df = st.session_state['processed_train'].copy()
+                plot_df['Actual'] = plot_df['sales']
+                plot_df['XGBoost_Pred'] = st.session_state['train_preds']['XGBoost']
+                plot_df = plot_df.sort_values('date').head(100)
+                fig = px.line(plot_df, x='date', y=['Actual','XGBoost_Pred'],
+                              title="Actual vs XGBoost Predicted (First 100 Rows)")
                 st.plotly_chart(fig, use_container_width=True)
-
-                # Download buttons for processed data and predictions
-                csv_data = df.to_csv(index=False).encode('utf-8')
-                st.download_button(
-                    label="Download Processed Training Data",
-                    data=csv_data, file_name="processed_training_data.csv", mime="text/csv"
-                )
-                # Prepare prediction output (id + preds)
-                pred_cols = ['id'] + [f'pred_{m}' for m in ['xgb','prophet','arima','lstm'] if f'pred_{m}' in df]
-                preds_df = df[pred_cols].copy()
-                preds_csv = preds_df.to_csv(index=False).encode('utf-8')
-                st.download_button(
-                    label="Download Training Predictions",
-                    data=preds_csv, file_name="training_predictions.csv", mime="text/csv"
-                )
-
-    # ----------- Prediction Tab -----------
-    with tab2:
-        st.header("Prediction")
-        if test_df is None:
-            st.info("Upload and validate a Test CSV to enable predictions.")
+            # Download processed training data
+            csv = st.session_state['processed_train'].to_csv(index=False).encode('utf-8')
+            st.download_button("Download Processed Training Data", csv, "processed_train.csv", "text/csv")
         else:
-            st.subheader("Test Data Preview")
-            st.dataframe(test_df.head(5))
-            # Filters
-            store_vals = sorted(test_df['store_nbr'].unique())
-            fam_vals   = sorted(test_df['family'].unique())
-            model_choice = st.selectbox("Select Model", ["XGBoost","Prophet","ARIMA","LSTM"])
-            store_choice = st.selectbox("Select Store Number", store_vals)
-            fam_choice   = st.selectbox("Select Product Family", fam_vals)
-            if st.button("Generate Forecast"):
-                subset = test_df[(test_df['store_nbr']==store_choice) & (test_df['family']==fam_choice)].copy()
-                if subset.empty:
-                    st.warning("No data for selected store/family.")
-                else:
-                    # Apply same preprocessing as train
-                    subset['date'] = pd.to_datetime(subset['date'])
-                    subset.sort_values('date', inplace=True)
-                    for col in cat_cols:  # reuse training cat_cols
-                        if col in subset:
-                            subset[col] = LabelEncoder().fit_transform(subset[col].astype(str))
-                    subset['month']   = subset['date'].dt.month
-                    subset['day']     = subset['date'].dt.day
-                    subset['weekday'] = subset['date'].dt.weekday
-                    subset['is_weekend'] = subset['weekday'].isin([5,6]).astype(int)
-                    subset['lag_7']  = subset.groupby(['store_nbr','family'])['sales'].shift(7)
-                    subset['lag_14'] = subset.groupby(['store_nbr','family'])['sales'].shift(14)
-                    subset.dropna(inplace=True)
-                    subset[num_cols] = scaler.transform(subset[num_cols])
-                    # Predict with chosen model
-                    if model_choice == "XGBoost":
-                        y_pred = xgb_model.predict(subset.drop(columns=['id','date','sales']))
-                    elif model_choice == "Prophet":
-                        temp = subset[['date','sales']].rename(columns={'date':'ds','sales':'y'})
-                        future = m.make_future_dataframe(periods=0)
-                        forecast = m.predict(future)
-                        y_pred = forecast['yhat'].values[-len(subset):]
-                    elif model_choice == "ARIMA":
-                        try:
-                            res = arima_res
-                            y_pred = res.predict(start=0, end=len(subset)-1)
-                        except:
-                            y_pred = np.full(len(subset), np.nan)
-                    elif model_choice == "LSTM":
-                        X_pred = subset.drop(columns=['id','date','sales']).values.reshape((len(subset),1,len(num_cols)))
-                        y_pred = lstm_model.predict(X_pred).flatten()
-                    else:
-                        y_pred = np.full(len(subset), np.nan)
-                    subset['pred'] = y_pred
-                    # Plot
-                    st.subheader(f"{model_choice} Forecast for Store {store_choice}, Family '{fam_choice}'")
-                    fig2 = go.Figure()
-                    fig2.add_trace(go.Scatter(x=subset['date'], y=subset['sales'], mode='lines', name='Actual'))
-                    fig2.add_trace(go.Scatter(x=subset['date'], y=subset['pred'], mode='lines', name='Predicted'))
-                    st.plotly_chart(fig2, use_container_width=True)
-                    # Group metrics
-                    rmse, mae, rmsle = calc_metrics(subset['sales'], subset['pred'])
-                    st.write(f"**Metrics (subset)** – RMSE: {rmse:.3f}, MAE: {mae:.3f}, RMSLE: {rmsle:.3f}")
+            st.info("Click 'Process & Train Models' in the sidebar to start training.")
 
+    with tab2:
+        st.header("Prediction (Test Set)")
+        if st.session_state['trained'] and st.session_state['predictions'] is not None:
+            pred_df = st.session_state['predictions']
+            model_sel = st.selectbox("Select Model", 
+                                     ['XGBoost','ARIMA','SARIMA','Prophet','LSTM'])
+            store_sel = st.selectbox("Select Store Number", sorted(pred_df['store_nbr'].unique()))
+            family_sel = st.selectbox("Select Family", sorted(pred_df['family'].unique()))
+            # Filter predictions
+            filtered = pred_df[(pred_df['store_nbr']==store_sel) & 
+                               (pred_df['family']==family_sel)]
+            if not filtered.empty:
+                st.subheader(f"Predictions for Store {store_sel}, Family '{family_sel}' using {model_sel}")
+                fig2 = px.line(filtered, x='date', y=model_sel, 
+                               title=f"{model_sel} Predicted Sales")
+                st.plotly_chart(fig2, use_container_width=True)
+                st.dataframe(filtered[['date', model_sel]]
+                             .rename(columns={'date':'Date', model_sel:'Predicted Sales'}))
+            else:
+                st.write("No predictions available for this selection.")
+            # Download all predictions
+            csv2 = pred_df.to_csv(index=False).encode('utf-8')
+            st.download_button("Download All Predictions", csv2, "predictions.csv", "text/csv")
+        else:
+            st.info("Models have not been trained or no predictions available.")
