@@ -19,14 +19,11 @@ st.markdown("<h1 style='text-align: center;'>Retail Sales Time Series Analysis</
 TRAIN_END = "2017-07-15"
 VAL_END = "2017-08-15"
 
-# Helper function to hash file content for caching
 def hash_file(file):
     if hasattr(file, 'seek'):
         file.seek(0)
     content = file.read()
-    file.seek(0)  # Reset file pointer after reading
-    if not content or len(content) == 0:
-        raise ValueError("The file is empty or contains no data.")
+    file.seek(0)
     return hashlib.sha256(content).hexdigest()
 
 @st.cache_data
@@ -34,26 +31,18 @@ def detect_column_types(df, date_col):
     numeric_cols = df.select_dtypes(['int64', 'float64']).columns.tolist()
     if date_col in numeric_cols:
         numeric_cols.remove(date_col)
-    categorical_cols = [col for col in df.columns if col != date_col and 
-                       (df[col].dtype in ['object', 'category', 'bool'] or df[col].nunique() / len(df) < 0.05)]
+    categorical_cols = [col for col in df.columns if col != date_col and (df[col].dtype in ['object', 'category', 'bool'] or df[col].nunique() / len(df) < 0.05)]
     return numeric_cols, categorical_cols
 
 @st.cache_data
 def load_data(file_content, file_hash, date_col, target_col):
-    if not file_content or len(file_content) == 0:
-        raise ValueError("The uploaded file is empty or contains no data.")
-    try:
-        df = pd.read_csv(BytesIO(file_content))
-        if df.empty:
-            raise ValueError("The uploaded file contains no valid data rows.")
-        df[date_col] = pd.to_datetime(df[date_col], errors='coerce')
-        df[['store_nbr', 'onpromotion']] = df[['store_nbr', 'onpromotion']].astype('int32')
-        if target_col and target_col in df.columns:
-            df[target_col] = pd.to_numeric(df[target_col], errors='coerce').astype('float32')
-        df.dropna(subset=[date_col], inplace=True)
-        return df
-    except pd.errors.ParserError as e:
-        raise ValueError(f"Error parsing the file: {str(e)}. Please ensure it is a valid CSV file.")
+    df = pd.read_csv(BytesIO(file_content))
+    df[date_col] = pd.to_datetime(df[date_col], errors='coerce')
+    df[['store_nbr', 'onpromotion']] = df[['store_nbr', 'onpromotion']].astype('int32')
+    if target_col and target_col in df.columns:
+        df[target_col] = pd.to_numeric(df[target_col], errors='coerce').astype('float32')
+    df.dropna(subset=[date_col], inplace=True)
+    return df
 
 @st.cache_data
 def prepare_data(train, test, date_col, target_col):
@@ -62,8 +51,7 @@ def prepare_data(train, test, date_col, target_col):
     combined = pd.concat([train, test]).sort_values(['store_nbr', 'family', date_col])
     agg_dict = {target_col: 'sum', 'onpromotion': 'sum', 'is_train': 'first', 'id': 'first'}
     combined = combined.groupby(['store_nbr', 'family', date_col]).agg(agg_dict).reset_index()
-    combined = combined.astype({'store_nbr': 'int32', 'family': 'category', date_col: 'datetime64[ns]', 
-                                target_col: 'float32', 'onpromotion': 'int32', 'is_train': 'int8'})
+    combined = combined.astype({'store_nbr': 'int32', 'family': 'category', date_col: 'datetime64[ns]', target_col: 'float32', 'onpromotion': 'int32', 'is_train': 'int8'})
     return combined
 
 @st.cache_data
@@ -108,60 +96,30 @@ def get_download_file(df, filename):
     return buf.getvalue(), 'text/csv'
 
 def reclassify_family(df):
-    family_map = {
-        'AUTOMOTIVE': 'Tools', 'HARDWARE': 'Tools', 'LAWN AND GARDEN': 'Tools', 'PLAYERS AND ELECTRONICS': 'Tools',
-        'BEAUTY': 'LifeStyle', 'LINGERIE': 'LifeStyle', 'LADIESWEAR': 'LifeStyle', 'PERSONAL CARE': 'LifeStyle',
-        'CELEBRATION': 'LifeStyle', 'MAGAZINES': 'LifeStyle', 'BOOKS': 'LifeStyle', 'BABY CARE': 'LifeStyle',
-        'HOME APPLIANCES': 'Home', 'HOME AND KITCHEN I': 'Home', 'HOME AND KITCHEN II': 'Home',
-        'HOME CARE': 'Home', 'SCHOOL AND OFFICE SUPPLIES': 'Home',
-        'GROCERY II': 'Food', 'PET SUPPLIES': 'Food', 'SEAFOOD': 'Food', 'LIQUOR,WINE,BEER': 'Food',
-        'DELI': 'Daily', 'EGGS': 'Daily'
-    }
+    family_map = {'AUTOMOTIVE': 'Tools', 'HARDWARE': 'Tools', 'LAWN AND GARDEN': 'Tools', 'PLAYERS AND ELECTRONICS': 'Tools', 'BEAUTY': 'LifeStyle', 'LINGERIE': 'LifeStyle', 'LADIESWEAR': 'LifeStyle', 'PERSONAL CARE': 'LifeStyle', 'CELEBRATION': 'LifeStyle', 'MAGAZINES': 'LifeStyle', 'BOOKS': 'LifeStyle', 'BABY CARE': 'LifeStyle', 'HOME APPLIANCES': 'Home', 'HOME AND KITCHEN I': 'Home', 'HOME AND KITCHEN II': 'Home', 'HOME CARE': 'Home', 'SCHOOL AND OFFICE SUPPLIES': 'Home', 'GROCERY II': 'Food', 'PET SUPPLIES': 'Food', 'SEAFOOD': 'Food', 'LIQUOR,WINE,BEER': 'Food', 'DELI': 'Daily', 'EGGS': 'Daily'}
     df['family'] = df['family'].replace(family_map)
     return df
 
 @st.cache_data
 def plot_missingness(df):
     missing_matrix = df.isna().astype(int).to_numpy()
-    fig = go.Figure(data=[
-        go.Heatmap(
-            z=missing_matrix.T,
-            x=list(range(len(df))),
-            y=df.columns,
-            colorscale='Viridis',
-            zmin=0,
-            zmax=1,
-            hoverongaps=False,
-            hovertemplate='Row: %{x}<br>Column: %{y}<br>Missing: %{z}<extra></extra>'
-        )
-    ])
-    fig.update_layout(
-        title="Data Missingness Overview",
-        xaxis_title="Row Index",
-        yaxis_title="Columns",
-        yaxis_autorange='reversed'
-    )
+    fig = go.Figure(data=[go.Heatmap(z=missing_matrix.T, x=list(range(len(df))), y=df.columns, colorscale='Viridis', zmin=0, zmax=1, hoverongaps=False, hovertemplate='Row: %{x}<br>Column: %{y}<br>Missing: %{z}<extra></extra>')])
+    fig.update_layout(title="Data Missingness Overview", xaxis_title="Row Index", yaxis_title="Columns", yaxis_autorange='reversed')
     return fig
 
 @st.cache_data
 def plot_sales_trends(df, date_col, granularity='D', family_filter=None, date_range=None):
     if family_filter:
         df = df[df['family'] == family_filter]
-    
     if date_range:
         start_date, end_date = date_range
         df = df[(df[date_col] >= start_date) & (df[date_col] <= end_date)]
-    
     sales_by_date = df.groupby(pd.Grouper(key=date_col, freq=granularity))['sales'].sum().reset_index()
-    fig = px.line(sales_by_date, x=date_col, y='sales', title=f"Total Sales Trends ({granularity}ly)",
-                  labels={'sales': 'Total Sales', date_col: 'Date'}, color_discrete_sequence=['blue'])
-    
+    fig = px.line(sales_by_date, x=date_col, y='sales', title=f"Total Sales Trends ({granularity}ly)", labels={'sales': 'Total Sales', date_col: 'Date'}, color_discrete_sequence=['blue'])
     fig.update_xaxes(type='date')
-    
     holidays = df[df['type_y'] == 'Holiday'][date_col].unique()
     for holiday in holidays:
         fig.add_vline(x=holiday, line=dict(color="red", dash="dash"), annotation_text="Holiday", annotation_position="top")
-    
     fig.update_layout(xaxis=dict(tickangle=45), yaxis_gridcolor='lightgray')
     return fig
 
@@ -173,8 +131,7 @@ def plot_weekly_trends(df, date_col, family_filter=None, date_range=None):
         start_date, end_date = date_range
         df = df[(df[date_col] >= start_date) & (df[date_col] <= end_date)]
     df_weekly = df.set_index(date_col)['sales'].resample('W').sum().reset_index()
-    fig = px.line(df_weekly, x=date_col, y='sales', title="Weekly Sales Trends",
-                  labels={'sales': 'Total Sales', date_col: 'Date'}, color_discrete_sequence=['blue'])
+    fig = px.line(df_weekly, x=date_col, y='sales', title="Weekly Sales Trends", labels={'sales': 'Total Sales', date_col: 'Date'}, color_discrete_sequence=['blue'])
     fig.update_layout(xaxis=dict(tickangle=45), yaxis_gridcolor='lightgray')
     return fig
 
@@ -185,8 +142,7 @@ def plot_sales_by_family(df, color_scale='Blues', date_range=None):
         df = df[(df['date'] >= start_date) & (df['date'] <= end_date)]
     df = reclassify_family(df.copy())
     sales_by_family = df.groupby('family')['sales'].mean().sort_values(ascending=False).reset_index()
-    fig = px.bar(sales_by_family, y='family', x='sales', orientation='h', title="Average Sales by Product Category",
-                 labels={'sales': 'Average Sales', 'family': 'Product Family'}, color='sales', color_continuous_scale=color_scale)
+    fig = px.bar(sales_by_family, y='family', x='sales', orientation='h', title="Average Sales by Product Category", labels={'sales': 'Average Sales', 'family': 'Product Family'}, color='sales', color_continuous_scale=color_scale)
     fig.update_layout(yaxis=dict(autorange="reversed"), xaxis_gridcolor='lightgray')
     return fig
 
@@ -196,8 +152,7 @@ def plot_sales_by_store(df, color_scale='Blues', date_range=None):
         start_date, end_date = date_range
         df = df[(df['date'] >= start_date) & (df['date'] <= end_date)]
     sales_by_store = df.groupby('store_nbr')['sales'].mean().sort_values(ascending=False).reset_index()
-    fig = px.bar(sales_by_store, x='store_nbr', y='sales', title="Average Sales by Store Number",
-                 labels={'sales': 'Average Sales', 'store_nbr': 'Store Number'}, color='sales', color_continuous_scale=color_scale)
+    fig = px.bar(sales_by_store, x='store_nbr', y='sales', title="Average Sales by Store Number", labels={'sales': 'Average Sales', 'store_nbr': 'Store Number'}, color='sales', color_continuous_scale=color_scale)
     fig.update_layout(xaxis=dict(tickangle=45), yaxis_gridcolor='lightgray')
     return fig
 
@@ -208,8 +163,7 @@ def plot_sales_by_city_state(df, color_scale='Blues', date_range=None):
         df = df[(df['date'] >= start_date) & (df['date'] <= end_date)]
     df['city_state'] = df['city'] + '_' + df['state']
     sales_by_city_state = df.groupby('city_state')['sales'].mean().sort_values(ascending=False).reset_index()
-    fig = px.bar(sales_by_city_state, y='city_state', x='sales', orientation='h', title="Average Sales by City-State",
-                 labels={'sales': 'Average Sales', 'city_state': 'City-State'}, color='sales', color_continuous_scale=color_scale)
+    fig = px.bar(sales_by_city_state, y='city_state', x='sales', orientation='h', title="Average Sales by City-State", labels={'sales': 'Average Sales', 'city_state': 'City-State'}, color='sales', color_continuous_scale=color_scale)
     fig.update_layout(yaxis=dict(autorange="reversed"), xaxis_gridcolor='lightgray')
     return fig
 
@@ -220,8 +174,7 @@ def plot_sales_by_type_locale(df, date_range=None):
         df = df[(df['date'] >= start_date) & (df['date'] <= end_date)]
     df['type_locale'] = df['type_y'] + '_' + df['locale']
     sales_by_type_locale = df.groupby('type_locale')['sales'].mean().reset_index()
-    fig = px.pie(sales_by_type_locale, names='type_locale', values='sales', title="Sales Distribution by Type-Locale",
-                 color_discrete_sequence=px.colors.qualitative.Pastel)
+    fig = px.pie(sales_by_type_locale, names='type_locale', values='sales', title="Sales Distribution by Type-Locale", color_discrete_sequence=px.colors.qualitative.Pastel)
     fig.update_traces(textinfo='percent+label', pull=[0.1 if i == sales_by_type_locale['sales'].idxmax() else 0 for i in range(len(sales_by_type_locale))])
     return fig
 
@@ -230,8 +183,7 @@ def plot_promotion_impact(df, color_scheme='Bold', date_range=None):
     if date_range:
         start_date, end_date = date_range
         df = df[(df['date'] >= start_date) & (df['date'] <= end_date)]
-    fig = px.box(df, x='onpromotion', y='sales', color='family', title="Sales Distribution by Promotion (by Family)",
-                 labels={'sales': 'Sales', 'onpromotion': 'On Promotion (0 = No, 1 = Yes)'}, color_discrete_sequence=getattr(px.colors.qualitative, color_scheme))
+    fig = px.box(df, x='onpromotion', y='sales', color='family', title="Sales Distribution by Promotion (by Family)", labels={'sales': 'Sales', 'onpromotion': 'On Promotion (0 = No, 1 = Yes)'}, color_discrete_sequence=getattr(px.colors.qualitative, color_scheme))
     fig.update_layout(xaxis=dict(tickmode='linear'), yaxis_gridcolor='lightgray', legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
     return fig
 
@@ -240,8 +192,7 @@ def plot_sales_vs_oil(df, date_range=None):
     if date_range:
         start_date, end_date = date_range
         df = df[(df['date'] >= start_date) & (df['date'] <= end_date)]
-    fig = px.scatter(df, x='dcoilwtico', y='sales', trendline="ols", title="Sales vs. Oil Price with Trend",
-                     labels={'sales': 'Sales', 'dcoilwtico': 'Oil Price (dcoilwtico)'}, color_discrete_sequence=['blue'])
+    fig = px.scatter(df, x='dcoilwtico', y='sales', trendline="ols", title="Sales vs. Oil Price with Trend", labels={'sales': 'Sales', 'dcoilwtico': 'Oil Price (dcoilwtico)'}, color_discrete_sequence=['blue'])
     fig.update_layout(yaxis_gridcolor='lightgray')
     return fig
 
@@ -252,8 +203,7 @@ def plot_monthly_seasonality(df, color_scheme='Pastel', date_range=None):
         df = df[(df['date'] >= start_date) & (df['date'] <= end_date)]
     df['month'] = df['date'].dt.month
     sales_by_month = df.groupby(['month', 'family'])['sales'].mean().reset_index()
-    fig = px.box(sales_by_month, x='month', y='sales', color='family', title="Average Monthly Sales by Family",
-                 labels={'sales': 'Average Sales', 'month': 'Month'}, color_discrete_sequence=getattr(px.colors.qualitative, color_scheme))
+    fig = px.box(sales_by_month, x='month', y='sales', color='family', title="Average Monthly Sales by Family", labels={'sales': 'Average Sales', 'month': 'Month'}, color_discrete_sequence=getattr(px.colors.qualitative, color_scheme))
     fig.update_layout(xaxis=dict(tickmode='linear'), yaxis_gridcolor='lightgray', legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
     return fig
 
@@ -264,8 +214,7 @@ def plot_dow_patterns(df, color_scheme='Pastel', date_range=None):
         df = df[(df['date'] >= start_date) & (df['date'] <= end_date)]
     df['dow'] = df['date'].dt.dayofweek
     sales_by_dow = df.groupby(['dow', 'family'])['sales'].mean().reset_index()
-    fig = px.box(sales_by_dow, x='dow', y='sales', color='family', title="Average Sales by Day of Week (by Family)",
-                 labels={'sales': 'Average Sales', 'dow': 'Day of Week (0=Mon, 6=Sun)'}, color_discrete_sequence=getattr(px.colors.qualitative, color_scheme))
+    fig = px.box(sales_by_dow, x='dow', y='sales', color='family', title="Average Sales by Day of Week (by Family)", labels={'sales': 'Average Sales', 'dow': 'Day of Week (0=Mon, 6=Sun)'}, color_discrete_sequence=getattr(px.colors.qualitative, color_scheme))
     fig.update_layout(xaxis=dict(tickmode='linear'), yaxis_gridcolor='lightgray', legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
     return fig
 
@@ -320,8 +269,7 @@ def plot_lag_plot(df, target_col, date_range=None):
         start_date, end_date = date_range
         df = df[(df['date'] >= start_date) & (df['date'] <= end_date)]
     lag = 1
-    fig = px.scatter(df, x=target_col.shift(lag), y=target_col, trendline="ols", title=f"Lag Plot (Lag={lag})",
-                     labels={f"{target_col}.shift({lag})": f"Sales (t-{lag})", target_col: "Sales (t)"}, color_discrete_sequence=['blue'])
+    fig = px.scatter(df, x=target_col.shift(lag), y=target_col, trendline="ols", title=f"Lag Plot (Lag={lag})", labels={f"{target_col}.shift({lag})": f"Sales (t-{lag})", target_col: "Sales (t)"}, color_discrete_sequence=['blue'])
     fig.update_layout(yaxis_gridcolor='lightgray')
     return fig
 
@@ -331,8 +279,7 @@ def plot_periodogram(df, target_col, date_range=None):
         start_date, end_date = date_range
         df = df[(df['date'] >= start_date) & (df['date'] <= end_date)]
     freq, psd = periodogram(df[target_col].dropna())
-    fig = px.line(x=freq, y=psd, title="Periodogram of Sales",
-                  labels={'x': 'Frequency', 'y': 'Power Spectral Density'}, color_discrete_sequence=['blue'])
+    fig = px.line(x=freq, y=psd, title="Periodogram of Sales", labels={'x': 'Frequency', 'y': 'Power Spectral Density'}, color_discrete_sequence=['blue'])
     fig.add_hline(y=0, line=dict(color="black", dash="dash"))
     fig.update_layout(yaxis_gridcolor='lightgray')
     return fig
@@ -356,8 +303,7 @@ def plot_sales_heatmap(df, date_range=None):
         start_date, end_date = date_range
         df = df[(df['date'] >= start_date) & (df['date'] <= end_date)]
     pivot_data = df.pivot_table(values='sales', index='store_nbr', columns='family', aggfunc='sum', fill_value=0)
-    fig = px.imshow(pivot_data, text_auto=True, aspect="auto", title="Sales Heatmap: Stores vs. Product Families",
-                    labels={'x': 'Product Family', 'y': 'Store Number'}, color_continuous_scale='YlOrRd')
+    fig = px.imshow(pivot_data, text_auto=True, aspect="auto", title="Sales Heatmap: Stores vs. Product Families", labels={'x': 'Product Family', 'y': 'Store Number'}, color_continuous_scale='YlOrRd')
     fig.update_layout(xaxis=dict(side="top"), yaxis_gridcolor='lightgray')
     return fig
 
@@ -368,20 +314,14 @@ def main():
         train_file = st.file_uploader("Upload Train Data (.csv)", ['csv'], key="train")
         if train_file:
             if 'train_file' in st.session_state and st.session_state['train_file'] != train_file:
-                for key in ['train_date_col', 'train_target_col', 'train_numeric_cols', 'train_categorical_cols', 
-                           'train_outlier_method', 'train_scale', 'train_configured', 'train_df']:
+                for key in ['train_date_col', 'train_target_col', 'train_numeric_cols', 'train_categorical_cols', 'train_outlier_method', 'train_scale', 'train_configured', 'train_df']:
                     st.session_state.pop(key, None)
             with st.form("train_config"):
-                # Read file content and hash for caching
-                train_file.seek(0)  # Ensure file pointer is at the beginning
+                train_file.seek(0)
                 train_file_content = train_file.read()
-                train_file.seek(0)  # Reset file pointer after reading
+                train_file.seek(0)
                 train_file_hash = hash_file(train_file)
-                try:
-                    train = load_data(train_file_content, train_file_hash, 'date', 'sales')
-                except ValueError as e:
-                    st.error(str(e))
-                    st.stop()
+                train = load_data(train_file_content, train_file_hash, 'date', 'sales')
                 st.dataframe(train.head(), height=100)
                 date_col = st.selectbox("Select Date Column", train.columns, index=train.columns.tolist().index('date') if 'date' in train.columns else 0, key="train_date")
                 target_col = st.selectbox("Select Target Column (e.g., sales)", train.columns, index=train.columns.tolist().index('sales') if 'sales' in train.columns else 0, key="train_target")
@@ -391,46 +331,24 @@ def main():
                 outlier_method = st.selectbox("Handle Outliers", ['None', 'Remove', 'Replace'], index=2, key="train_outlier")
                 outlier_method = outlier_method.lower() if outlier_method != 'None' else None
                 scale = st.checkbox("Apply Scaling", key="train_scale")
-                st.form_submit_button("Apply Configuration", on_click=lambda: st.session_state.update({
-                    'train_date_col': date_col, 'train_target_col': target_col, 'train_numeric_cols': numeric_cols,
-                    'train_categorical_cols': categorical_cols, 'train_outlier_method': outlier_method, 'train_scale': scale,
-                    'train_configured': True, 'train_file': train_file, 'train_file_hash': train_file_hash
-                }))
+                st.form_submit_button("Apply Configuration", on_click=lambda: st.session_state.update({'train_date_col': date_col, 'train_target_col': target_col, 'train_numeric_cols': numeric_cols, 'train_categorical_cols': categorical_cols, 'train_outlier_method': outlier_method, 'train_scale': scale, 'train_configured': True, 'train_file': train_file, 'train_file_hash': train_file_hash}))
 
             if 'train_configured' in st.session_state and st.session_state['train_configured'] and 'train_file' in st.session_state:
-                train_file.seek(0)  # Ensure file pointer is at the beginning
-                try:
-                    train = load_data(st.session_state['train_file'].read(), st.session_state['train_file_hash'], st.session_state['train_date_col'], st.session_state['train_target_col'])
-                except ValueError as e:
-                    st.error(str(e))
-                    st.stop()
+                train_file.seek(0)
+                train = load_data(st.session_state['train_file'].read(), st.session_state['train_file_hash'], st.session_state['train_date_col'], st.session_state['train_target_col'])
                 st.session_state['train_df'] = train
                 st.dataframe(train.head(), height=100)
 
-                # User selects plots
-                plot_options = [
-                    "Missingness Matrix", "Sales Trends", "Weekly Trends", "Sales by Family", "Sales by Store",
-                    "Sales by City-State", "Sales by Type-Locale", "Promotion Impact", "Sales vs. Oil Price",
-                    "Monthly Seasonality", "Day-of-Week Patterns", "Seasonal Decomposition", "Autocorrelation (ACF)",
-                    "Partial Autocorrelation (PACF)", "Lag Plot", "Periodogram", "Rolling Statistics", "Sales Heatmap"
-                ]
+                plot_options = ["Missingness Matrix", "Sales Trends", "Weekly Trends", "Sales by Family", "Sales by Store", "Sales by City-State", "Sales by Type-Locale", "Promotion Impact", "Sales vs. Oil Price", "Monthly Seasonality", "Day-of-Week Patterns", "Seasonal Decomposition", "Autocorrelation (ACF)", "Partial Autocorrelation (PACF)", "Lag Plot", "Periodogram", "Rolling Statistics", "Sales Heatmap"]
                 selected_plots = st.multiselect("Select Plots to Generate", plot_options, default=[])
 
-                # Configuration for each selected plot
                 for plot in selected_plots:
                     with st.expander(f"Configure {plot}", expanded=True):
-                        # Add date range picker for all plots
                         date_range = None
-                        if plot != "Missingness Matrix":  # Missingness Matrix doesn't need date filtering
+                        if plot != "Missingness Matrix":
                             min_date = train[st.session_state['train_date_col']].min()
                             max_date = train[st.session_state['train_date_col']].max()
-                            date_range = st.date_input(
-                                "Select Date Range",
-                                value=(min_date, max_date),
-                                min_value=min_date,
-                                max_value=max_date,
-                                key=f"{plot}_date_range"
-                            )
+                            date_range = st.date_input("Select Date Range", value=(min_date, max_date), min_value=min_date, max_value=max_date, key=f"{plot}_date_range")
                             if len(date_range) == 2:
                                 date_range = (pd.to_datetime(date_range[0]), pd.to_datetime(date_range[1]))
                             else:
@@ -509,20 +427,14 @@ def main():
         test_file = st.file_uploader("Upload Test Data (.csv)", ['csv'], key="test")
         if test_file:
             if 'test_file' in st.session_state and st.session_state['test_file'] != test_file:
-                for key in ['test_date_col', 'test_numeric_cols', 'test_categorical_cols', 
-                           'test_outlier_method', 'test_scale', 'test_configured', 'test_df']:
+                for key in ['test_date_col', 'test_numeric_cols', 'test_categorical_cols', 'test_outlier_method', 'test_scale', 'test_configured', 'test_df']:
                     st.session_state.pop(key, None)
             with st.form("test_config"):
-                # Read file content and hash for caching
-                test_file.seek(0)  # Ensure file pointer is at the beginning
+                test_file.seek(0)
                 test_file_content = test_file.read()
-                test_file.seek(0)  # Reset file pointer after reading
+                test_file.seek(0)
                 test_file_hash = hash_file(test_file)
-                try:
-                    test = load_data(test_file_content, test_file_hash, 'date', None)
-                except ValueError as e:
-                    st.error(str(e))
-                    st.stop()
+                test = load_data(test_file_content, test_file_hash, 'date', None)
                 st.dataframe(test.head(), height=100)
                 date_col = st.selectbox("Select Date Column", test.columns, index=test.columns.tolist().index('date') if 'date' in test.columns else 0, key="test_date")
                 numeric_cols, categorical_cols = detect_column_types(test, date_col)
@@ -531,46 +443,24 @@ def main():
                 outlier_method = st.selectbox("Handle Outliers", ['None', 'Remove', 'Replace'], index=2, key="test_outlier")
                 outlier_method = outlier_method.lower() if outlier_method != 'None' else None
                 scale = st.checkbox("Apply Scaling", key="test_scale")
-                st.form_submit_button("Apply Configuration", on_click=lambda: st.session_state.update({
-                    'test_date_col': date_col, 'test_numeric_cols': numeric_cols, 'test_categorical_cols': categorical_cols,
-                    'test_outlier_method': outlier_method, 'test_scale': scale, 'test_configured': True, 'test_file': test_file,
-                    'test_file_hash': test_file_hash
-                }))
+                st.form_submit_button("Apply Configuration", on_click=lambda: st.session_state.update({'test_date_col': date_col, 'test_numeric_cols': numeric_cols, 'test_categorical_cols': categorical_cols, 'test_outlier_method': outlier_method, 'test_scale': scale, 'test_configured': True, 'test_file': test_file, 'test_file_hash': test_file_hash}))
 
             if 'test_configured' in st.session_state and st.session_state['test_configured'] and 'test_file' in st.session_state:
-                test_file.seek(0)  # Ensure file pointer is at the beginning
-                try:
-                    test = load_data(st.session_state['test_file'].read(), st.session_state['test_file_hash'], st.session_state['test_date_col'], None)
-                except ValueError as e:
-                    st.error(str(e))
-                    st.stop()
+                test_file.seek(0)
+                test = load_data(st.session_state['test_file'].read(), st.session_state['test_file_hash'], st.session_state['test_date_col'], None)
                 st.session_state['test_df'] = test
                 st.dataframe(test.head(), height=100)
 
-                # User selects plots
-                plot_options = [
-                    "Missingness Matrix", "Sales Trends", "Weekly Trends", "Sales by Family", "Sales by Store",
-                    "Sales by City-State", "Sales by Type-Locale", "Promotion Impact", "Sales vs. Oil Price",
-                    "Monthly Seasonality", "Day-of-Week Patterns", "Seasonal Decomposition", "Autocorrelation (ACF)",
-                    "Partial Autocorrelation (PACF)", "Lag Plot", "Periodogram", "Rolling Statistics", "Sales Heatmap"
-                ]
+                plot_options = ["Missingness Matrix", "Sales Trends", "Weekly Trends", "Sales by Family", "Sales by Store", "Sales by City-State", "Sales by Type-Locale", "Promotion Impact", "Sales vs. Oil Price", "Monthly Seasonality", "Day-of-Week Patterns", "Seasonal Decomposition", "Autocorrelation (ACF)", "Partial Autocorrelation (PACF)", "Lag Plot", "Periodogram", "Rolling Statistics", "Sales Heatmap"]
                 selected_plots = st.multiselect("Select Plots to Generate", plot_options, default=[])
 
-                # Configuration for each selected plot
                 for plot in selected_plots:
                     with st.expander(f"Configure {plot}", expanded=True):
-                        # Add date range picker for all plots
                         date_range = None
                         if plot != "Missingness Matrix":
                             min_date = test[st.session_state['test_date_col']].min()
                             max_date = test[st.session_state['test_date_col']].max()
-                            date_range = st.date_input(
-                                "Select Date Range",
-                                value=(min_date, max_date),
-                                min_value=min_date,
-                                max_value=max_date,
-                                key=f"{plot}_date_range_test"
-                            )
+                            date_range = st.date_input("Select Date Range", value=(min_date, max_date), min_value=min_date, max_value=max_date, key=f"{plot}_date_range_test")
                             if len(date_range) == 2:
                                 date_range = (pd.to_datetime(date_range[0]), pd.to_datetime(date_range[1]))
                             else:
@@ -648,8 +538,7 @@ def main():
     if 'train_df' in st.session_state and 'test_df' in st.session_state:
         with st.form("feature_engineering"):
             if st.form_submit_button("Generate Features"):
-                combined = prepare_data(st.session_state['train_df'], st.session_state['test_df'], 
-                                       st.session_state['train_date_col'], st.session_state['train_target_col'])
+                combined = prepare_data(st.session_state['train_df'], st.session_state['test_df'], st.session_state['train_date_col'], st.session_state['train_target_col'])
                 combined = fill_missing(combined, st.session_state['train_target_col'])
                 combined = add_features(combined, st.session_state['train_date_col'], st.session_state['train_target_col'])
                 train_set, val_set, test = split_data(combined, st.session_state['train_date_col'], st.session_state['train_target_col'])
