@@ -4,7 +4,6 @@ import numpy as np
 import plotly.graph_objects as go
 import plotly.express as px
 from statsmodels.tsa.seasonal import seasonal_decompose
-from statsmodels.tsa.stattools import acf, pacf
 from scipy.signal import periodogram
 from io import BytesIO
 import hashlib
@@ -73,11 +72,14 @@ def reclassify_family(df):
     df['family'] = df['family'].replace(family_map)
     return df
 
-def plot_sales_trends(df, date_col, granularity='D', family_filter=None):
-    if family_filter:
-        df = df[df['family'] == family_filter]
-    sales = df.groupby(pd.Grouper(key=date_col, freq=granularity))['sales'].sum().reset_index()
-    fig = px.line(sales, x=date_col, y='sales', title=f"Sales Trends ({granularity})", labels={'sales': 'Total Sales', date_col: 'Date'})
+def preprocess_data_for_plots(df, date_col, target_col):
+    df_agg = df.groupby(date_col)[target_col].sum().reset_index()
+    return df_agg
+
+def plot_sales_trends(df, date_col, target_col, granularity='D'):
+    df_agg = preprocess_data_for_plots(df, date_col, target_col)
+    sales = df_agg.groupby(pd.Grouper(key=date_col, freq=granularity))[target_col].sum().reset_index()
+    fig = px.line(sales, x=date_col, y=target_col, title=f"Sales Trends ({granularity})", labels={target_col: 'Total Sales', date_col: 'Date'})
     holidays = df[df['type_y'] == 'Holiday'][date_col].unique()
     for holiday in holidays:
         holiday_str = holiday.strftime('%Y-%m-%d')
@@ -85,26 +87,27 @@ def plot_sales_trends(df, date_col, granularity='D', family_filter=None):
     fig.update_layout(xaxis_tickangle=45, yaxis_gridcolor='lightgray')
     return fig
 
-def plot_sales_by_family(df):
+def plot_sales_by_family(df, target_col):
     df = reclassify_family(df)
-    sales = df.groupby('family')['sales'].mean().sort_values().reset_index()
-    fig = px.bar(sales, y='family', x='sales', orientation='h', title="Average Sales by Product Category", labels={'sales': 'Avg Sales', 'family': 'Category'})
+    sales = df.groupby('family')[target_col].mean().sort_values().reset_index()
+    fig = px.bar(sales, y='family', x=target_col, orientation='h', title="Average Sales by Product Category", labels={target_col: 'Avg Sales', 'family': 'Category'})
     fig.update_layout(yaxis_autorange='reversed', xaxis_gridcolor='lightgray')
     return fig
 
-def plot_sales_by_store(df):
-    sales = df.groupby('store_nbr')['sales'].mean().sort_values().reset_index()
-    fig = px.bar(sales, x='store_nbr', y='sales', title="Average Sales by Store", labels={'sales': 'Avg Sales', 'store_nbr': 'Store Number'})
+def plot_sales_by_store(df, target_col):
+    sales = df.groupby('store_nbr')[target_col].mean().sort_values().reset_index()
+    fig = px.bar(sales, x='store_nbr', y=target_col, title="Average Sales by Store", labels={target_col: 'Avg Sales', 'store_nbr': 'Store Number'})
     fig.update_layout(xaxis_tickangle=45, yaxis_gridcolor='lightgray')
     return fig
 
-def plot_promotion_impact(df):
-    fig = px.box(df, x='onpromotion', y='sales', title="Sales Distribution by Promotion", labels={'sales': 'Sales', 'onpromotion': 'On Promotion (0 = No, 1 = Yes)'})
+def plot_promotion_impact(df, target_col):
+    fig = px.box(df, x='onpromotion', y=target_col, title="Sales Distribution by Promotion", labels={target_col: 'Sales', 'onpromotion': 'On Promotion (0 = No, 1 = Yes)'})
     fig.update_layout(xaxis_tickmode='linear', yaxis_gridcolor='lightgray')
     return fig
 
-def plot_seasonal_decomposition(df, date_col):
-    df_ts = df.set_index(date_col)['sales'].resample('M').sum()
+def plot_seasonal_decomposition(df, date_col, target_col):
+    df_agg = preprocess_data_for_plots(df, date_col, target_col)
+    df_ts = df_agg.set_index(date_col)[target_col].resample('M').sum()
     decomp = seasonal_decompose(df_ts, model='additive', period=12)
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=decomp.trend.index, y=decomp.trend, name="Trend", line=dict(color="blue")))
@@ -113,51 +116,42 @@ def plot_seasonal_decomposition(df, date_col):
     fig.update_layout(title="Seasonal Decomposition of Sales", xaxis_title="Date", yaxis_title="Sales", yaxis_gridcolor='lightgray')
     return fig
 
-def plot_autocorrelation(df, target_col):
-    acf_vals, _ = acf(df[target_col].dropna(), nlags=30, fft=False)
-    fig = go.Figure()
-    fig.add_trace(go.Bar(x=list(range(len(acf_vals))), y=acf_vals, name="ACF", marker_color='blue'))
-    fig.update_layout(title="Autocorrelation (ACF) of Sales", xaxis_title="Lag", yaxis_title="Autocorrelation", yaxis_gridcolor='lightgray')
-    return fig
-
-def plot_partial_autocorrelation(df, target_col):
-    pacf_vals, _ = pacf(df[target_col].dropna(), nlags=30)
-    fig = go.Figure()
-    fig.add_trace(go.Bar(x=list(range(len(pacf_vals))), y=pacf_vals, name="PACF", marker_color='blue'))
-    fig.update_layout(title="Partial Autocorrelation (PACF) of Sales", xaxis_title="Lag", yaxis_title="Partial Autocorrelation", yaxis_gridcolor='lightgray')
-    return fig
-
 def plot_rolling_stats(df, date_col, target_col):
-    rolling = df.set_index(date_col)[target_col].rolling(window=30).agg(['mean', 'std']).dropna().reset_index()
+    df_agg = preprocess_data_for_plots(df, date_col, target_col)
+    rolling = df_agg.set_index(date_col)[target_col].rolling(window=30).agg(['mean', 'std']).dropna().reset_index()
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=rolling[date_col], y=rolling['mean'], name="Rolling Mean", line=dict(color="blue")))
     fig.add_trace(go.Scatter(x=rolling[date_col], y=rolling['std'], name="Rolling Std", line=dict(color="orange")))
     fig.update_layout(title="Rolling Mean and Std (30 Days)", xaxis_title="Date", yaxis_title="Sales", yaxis_gridcolor='lightgray')
     return fig
 
-def plot_periodogram(df, target_col):
-    freq, psd = periodogram(df[target_col].dropna())
+def plot_periodogram(df, date_col, target_col):
+    df_agg = preprocess_data_for_plots(df, date_col, target_col)
+    freq, psd = periodogram(df_agg[target_col].dropna())
     fig = px.line(x=freq, y=psd, title="Periodogram of Sales", labels={'x': 'Frequency', 'y': 'Power Spectral Density'})
     fig.update_layout(yaxis_gridcolor='lightgray')
     return fig
 
-def plot_lag_plot(df, target_col):
+def plot_lag_plot(df, date_col, target_col):
+    df_agg = preprocess_data_for_plots(df, date_col, target_col)
     lag = 1
-    df[f'{target_col}_lag'] = df[target_col].shift(lag)
-    fig = px.scatter(df, x=f'{target_col}_lag', y=target_col, title=f"Lag Plot (Lag={lag})", labels={f'{target_col}_lag': f'Sales (t-{lag})', target_col: 'Sales (t)'})
+    df_agg[f'{target_col}_lag'] = df_agg[target_col].shift(lag)
+    fig = px.scatter(df_agg, x=f'{target_col}_lag', y=target_col, title=f"Lag Plot (Lag={lag})", labels={f'{target_col}_lag': f'Sales (t-{lag})', target_col: 'Sales (t)'})
     fig.update_layout(yaxis_gridcolor='lightgray')
     return fig
 
 def plot_sales_by_dow(df, date_col, target_col):
-    df['dow'] = df[date_col].dt.dayofweek
-    sales_by_dow = df.groupby('dow')[target_col].mean().reset_index()
+    df_agg = df.groupby([date_col])[target_col].sum().reset_index()
+    df_agg['dow'] = df_agg[date_col].dt.dayofweek
+    sales_by_dow = df_agg.groupby('dow')[target_col].mean().reset_index()
     fig = px.line(sales_by_dow, x='dow', y=target_col, title="Average Sales by Day of Week", labels={'dow': 'Day of Week (0=Mon, 6=Sun)', target_col: 'Average Sales'})
     fig.update_layout(xaxis_tickmode='linear', yaxis_gridcolor='lightgray')
     return fig
 
 def plot_sales_by_month(df, date_col, target_col):
-    df['month'] = df[date_col].dt.month
-    sales_by_month = df.groupby('month')[target_col].mean().reset_index()
+    df_agg = df.groupby([date_col])[target_col].sum().reset_index()
+    df_agg['month'] = df_agg[date_col].dt.month
+    sales_by_month = df_agg.groupby('month')[target_col].mean().reset_index()
     fig = px.line(sales_by_month, x='month', y=target_col, title="Average Sales by Month", labels={'month': 'Month', target_col: 'Average Sales'})
     fig.update_layout(xaxis_tickmode='linear', yaxis_gridcolor='lightgray')
     return fig
@@ -190,19 +184,17 @@ def main():
                 st.dataframe(train.head())
 
                 if st.button("Generate Time Series Plots"):
-                    fig1 = plot_sales_trends(train, st.session_state['train_date'], 'D')
-                    fig2 = plot_sales_trends(train, st.session_state['train_date'], 'W')
-                    fig3 = plot_sales_by_family(train)
-                    fig4 = plot_sales_by_store(train)
-                    fig5 = plot_promotion_impact(train)
-                    fig6 = plot_seasonal_decomposition(train, st.session_state['train_date'])
-                    fig7 = plot_autocorrelation(train, st.session_state['train_target'])
-                    fig8 = plot_partial_autocorrelation(train, st.session_state['train_target'])
-                    fig9 = plot_rolling_stats(train, st.session_state['train_date'], st.session_state['train_target'])
-                    fig10 = plot_periodogram(train, st.session_state['train_target'])
-                    fig11 = plot_lag_plot(train, st.session_state['train_target'])
-                    fig12 = plot_sales_by_dow(train, st.session_state['train_date'], st.session_state['train_target'])
-                    fig13 = plot_sales_by_month(train, st.session_state['train_date'], st.session_state['train_target'])
+                    fig1 = plot_sales_trends(train, st.session_state['train_date'], st.session_state['train_target'], 'D')
+                    fig2 = plot_sales_trends(train, st.session_state['train_date'], st.session_state['train_target'], 'W')
+                    fig3 = plot_sales_by_family(train, st.session_state['train_target'])
+                    fig4 = plot_sales_by_store(train, st.session_state['train_target'])
+                    fig5 = plot_promotion_impact(train, st.session_state['train_target'])
+                    fig6 = plot_seasonal_decomposition(train, st.session_state['train_date'], st.session_state['train_target'])
+                    fig7 = plot_rolling_stats(train, st.session_state['train_date'], st.session_state['train_target'])
+                    fig8 = plot_periodogram(train, st.session_state['train_date'], st.session_state['train_target'])
+                    fig9 = plot_lag_plot(train, st.session_state['train_date'], st.session_state['train_target'])
+                    fig10 = plot_sales_by_dow(train, st.session_state['train_date'], st.session_state['train_target'])
+                    fig11 = plot_sales_by_month(train, st.session_state['train_date'], st.session_state['train_target'])
 
                     st.plotly_chart(fig1)
                     st.plotly_chart(fig2)
@@ -216,8 +208,6 @@ def main():
                     st.plotly_chart(fig9)
                     st.plotly_chart(fig10)
                     st.plotly_chart(fig11)
-                    st.plotly_chart(fig12)
-                    st.plotly_chart(fig13)
 
                     data = get_download_file(train, "train_data.csv")
                     st.download_button("Download Train Data", data[0], "train_data.csv", data[1])
@@ -245,11 +235,11 @@ def main():
                 st.dataframe(test.head())
 
                 if st.button("Generate Time Series Plots"):
-                    fig1 = plot_sales_trends(test, st.session_state['test_date'], 'D')
-                    fig2 = plot_sales_trends(test, st.session_state['test_date'], 'W')
-                    fig3 = plot_sales_by_family(test)
-                    fig4 = plot_sales_by_store(test)
-                    fig5 = plot_promotion_impact(test)
+                    fig1 = plot_sales_trends(test, st.session_state['test_date'], 'sales', 'D')
+                    fig2 = plot_sales_trends(test, st.session_state['test_date'], 'sales', 'W')
+                    fig3 = plot_sales_by_family(test, 'sales')
+                    fig4 = plot_sales_by_store(test, 'sales')
+                    fig5 = plot_promotion_impact(test, 'sales')
 
                     st.plotly_chart(fig1)
                     st.plotly_chart(fig2)
