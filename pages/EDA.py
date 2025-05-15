@@ -156,27 +156,31 @@ def plot_acf(df, date_col, target_col):
     series = df[(df['store_nbr'] == 1) & (df['family'] == 'GROCERY I')].groupby(date_col)[target_col].sum()
     if len(series) > 28:
         acf_vals, acf_confint = acf(series.dropna(), nlags=28, alpha=0.05)
-        lags = range(len(acf_vals))
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(x=lags, y=acf_vals, mode='markers+lines', name='ACF'))
-        fig.add_trace(go.Scatter(x=lags, y=acf_confint[:, 0], fill='tonexty', mode='none', fillcolor='rgba(0,100,80,0.2)'))
-        fig.add_trace(go.Scatter(x=lags, y=acf_confint[:, 1], fill='tonexty', mode='none', fillcolor='rgba(0,100,80,0.2)'))
-        fig.add_hline(y=0, line=dict(color="black", dash="dash"))
-        fig.update_layout(title='ACF for Store 1, GROCERY I', xaxis_title='Lag', yaxis_title='Autocorrelation', yaxis_gridcolor='lightgray')
-        return fig
+        if not np.any(np.isnan(acf_vals)) and not np.any(np.isinf(acf_vals)):
+            lags = list(range(len(acf_vals)))  # Convert range to list
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=lags, y=acf_vals, mode='markers+lines', name='ACF'))
+            fig.add_trace(go.Scatter(x=lags, y=acf_confint[:, 0], fill='tonexty', mode='none', fillcolor='rgba(0,100,80,0.2)'))
+            fig.add_trace(go.Scatter(x=lags, y=acf_confint[:, 1], fill='tonexty', mode='none', fillcolor='rgba(0,100,80,0.2)'))
+            fig.add_hline(y=0, line=dict(color="black", dash="dash"))
+            fig.update_layout(title='ACF for Store 1, GROCERY I', xaxis_title='Lag', yaxis_title='Autocorrelation', yaxis_gridcolor='lightgray')
+            return fig
+    return None
 
 def plot_pacf(df, date_col, target_col):
     series = df[(df['store_nbr'] == 1) & (df['family'] == 'GROCERY I')].groupby(date_col)[target_col].sum()
     if len(series) > 28:
         pacf_vals, pacf_confint = pacf(series.dropna(), nlags=28, alpha=0.05)
-        lags = range(len(pacf_vals))
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(x=lags, y=pacf_vals, mode='markers+lines', name='PACF'))
-        fig.add_trace(go.Scatter(x=lags, y=pacf_confint[:, 0], fill='tonexty', mode='none', fillcolor='rgba(0,100,80,0.2)'))
-        fig.add_trace(go.Scatter(x=lags, y=pacf_confint[:, 1], fill='tonexty', mode='none', fillcolor='rgba(0,100,80,0.2)'))
-        fig.add_hline(y=0, line=dict(color="black", dash="dash"))
-        fig.update_layout(title='PACF for Store 1, GROCERY I', xaxis_title='Lag', yaxis_title='Partial Autocorrelation', yaxis_gridcolor='lightgray')
-        return fig
+        if not np.any(np.isnan(pacf_vals)) and not np.any(np.isinf(pacf_vals)):
+            lags = list(range(len(pacf_vals)))  # Convert range to list
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=lags, y=pacf_vals, mode='markers+lines', name='PACF'))
+            fig.add_trace(go.Scatter(x=lags, y=pacf_confint[:, 0], fill='tonexty', mode='none', fillcolor='rgba(0,100,80,0.2)'))
+            fig.add_trace(go.Scatter(x=lags, y=pacf_confint[:, 1], fill='tonexty', mode='none', fillcolor='rgba(0,100,80,0.2)'))
+            fig.add_hline(y=0, line=dict(color="black", dash="dash"))
+            fig.update_layout(title='PACF for Store 1, GROCERY I', xaxis_title='Lag', yaxis_title='Partial Autocorrelation', yaxis_gridcolor='lightgray')
+            return fig
+    return None
 
 def train_xgboost_model(train_df, target_col):
     train_df = train_df.copy()
