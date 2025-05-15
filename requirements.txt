@@ -14,3 +14,4 @@ psutil==6.0.0
 seaborn
 missingno
 plotly
+lightgbm
