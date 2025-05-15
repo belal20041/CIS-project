@@ -111,7 +111,7 @@ with training_tab:
     sub_file = st.file_uploader("Upload Submission CSV", type="csv", key="uploader_sub")
     
     # Model selection
-    models = ["Naive", "Seasonal Naive", "Moving Average", "Linear Regression"]  # Simplified for demo
+    models = ["Naive", "Seasonal Naive", "Moving Average", "Linear Regression"]
     selected_models = st.multiselect("Select Models to Train", models, default=["Naive"])
     
     # Train button
@@ -187,7 +187,6 @@ with training_tab:
                     metrics = {
                         'rmsle': np.sqrt(mean_squared_error(np.log1p(actual), np.log1p(predicted))),
                         'rmse': np.sqrt(mean_squared_error(actual, predicted)),
-_theory = np.log1p  # For log(1 + x) transformation
                         'mae': mean_absolute_error(actual, predicted),
                         'mape': mean_absolute_percentage_error(actual + 1e-10, predicted + 1e-10)
                     }
