@@ -6,16 +6,43 @@ from statsmodels.tsa.stattools import acf, pacf
 from statsmodels.tsa.seasonal import seasonal_decompose
 from scipy.signal import periodogram
 from io import BytesIO
+import matplotlib.pyplot as plt
+import seaborn as sns
+import numpy as np
+from datetime import datetime
+from sklearn.model_selection import train_test_split
+from sklearn.compose import ColumnTransformer
+from sklearn.preprocessing import OneHotEncoder
+from xgboost import XGBRegressor
 
 st.set_page_config(layout="wide")
 st.markdown("<h1 style='text-align: center;'>Retail Sales Analysis</h1>", unsafe_allow_html=True)
 
-def load_data(file_path, date_col, target_col):
+def load_data(file_path, date_col, target_col=None):
     df = pd.read_csv(file_path)
     df[date_col] = pd.to_datetime(df[date_col])
     df[['store_nbr', 'onpromotion']] = df[['store_nbr', 'onpromotion']].astype('int32')
-    df[target_col] = pd.to_numeric(df[target_col]).astype('float32')
+    if target_col and target_col in df.columns:
+        df[target_col] = pd.to_numeric(df[target_col]).astype('float32')
     df.dropna(subset=[date_col], inplace=True)
+    
+    # Replace family categories
+    family_map = {
+        'AUTOMOTIVE': 'Tools', 'HARDWARE': 'Tools', 'LAWN AND GARDEN': 'Tools', 'PLAYERS AND ELECTRONICS': 'Tools',
+        'BEAUTY': 'LifeStyle', 'LINGERIE': 'LifeStyle', 'LADIESWEAR': 'LifeStyle', 'PERSONAL CARE': 'LifeStyle',
+        'CELEBRATION': 'LifeStyle', 'MAGAZINES': 'LifeStyle', 'BOOKS': 'LifeStyle', 'BABY CARE': 'LifeStyle',
+        'HOME APPLIANCES': 'Home', 'HOME AND KITCHEN I': 'Home', 'HOME AND KITCHEN II': 'Home', 'HOME CARE': 'Home',
+        'SCHOOL AND OFFICE SUPPLIES': 'Home', 'GROCERY II': 'Food', 'PET SUPPLIES': 'Food', 'SEAFOOD': 'Food',
+        'LIQUOR,WINE,BEER': 'Food', 'DELI': 'Daily', 'EGGS': 'Daily'
+    }
+    df['family'] = df['family'].replace(family_map)
+    
+    # Create city_state and type_locale columns
+    if 'city' in df.columns and 'state' in df.columns:
+        df['city_state'] = df['city'] + "_" + df['state']
+    if 'type_y' in df.columns and 'locale' in df.columns:
+        df['type_locale'] = df['type_y'] + "_" + df['locale']
+    
     return df
 
 def plot_sales_trends(df, date_col, target_col, granularity='D'):
@@ -28,9 +55,13 @@ def plot_sales_trends(df, date_col, target_col, granularity='D'):
     fig.update_layout(xaxis_tickangle=45, yaxis_gridcolor='lightgray')
     return fig
 
+def plot_sales_time_series(df, date_col, target_col):
+    sales = df.groupby(date_col)[target_col].mean().reset_index()
+    fig = px.line(sales, x=date_col, y=target_col, title="Sales Time Series")
+    fig.update_layout(xaxis_tickangle=45, yaxis_gridcolor='lightgray')
+    return fig
+
 def plot_sales_by_family(df, target_col):
-    family_map = {'AUTOMOTIVE': 'Tools', 'HARDWARE': 'Tools', 'LAWN AND GARDEN': 'Tools', 'PLAYERS AND ELECTRONICS': 'Tools', 'BEAUTY': 'LifeStyle', 'LINGERIE': 'LifeStyle', 'LADIESWEAR': 'LifeStyle', 'PERSONAL CARE': 'LifeStyle', 'CELEBRATION': 'LifeStyle', 'MAGAZINES': 'LifeStyle', 'BOOKS': 'LifeStyle', 'BABY CARE': 'LifeStyle', 'HOME APPLIANCES': 'Home', 'HOME AND KITCHEN I': 'Home', 'HOME AND KITCHEN II': 'Home', 'HOME CARE': 'Home', 'SCHOOL AND OFFICE SUPPLIES': 'Home', 'GROCERY II': 'Food', 'PET SUPPLIES': 'Food', 'SEAFOOD': 'Food', 'LIQUOR,WINE,BEER': 'Food', 'DELI': 'Daily', 'EGGS': 'Daily'}
-    df['family'] = df['family'].replace(family_map)
     sales = df.groupby('family')[target_col].mean().sort_values().reset_index()
     fig = px.bar(sales, y='family', x=target_col, orientation='h', title="Average Sales by Product Category")
     fig.update_layout(yaxis_autorange='reversed', xaxis_gridcolor='lightgray')
@@ -40,6 +71,17 @@ def plot_sales_by_store(df, target_col):
     sales = df.groupby('store_nbr')[target_col].mean().sort_values().reset_index()
     fig = px.bar(sales, x='store_nbr', y=target_col, title="Average Sales by Store")
     fig.update_layout(xaxis_tickangle=45, yaxis_gridcolor='lightgray')
+    return fig
+
+def plot_sales_by_city_state(df, target_col):
+    sales = df.groupby('city_state')[target_col].mean().sort_values().reset_index()
+    fig = px.bar(sales, y='city_state', x=target_col, orientation='h', title="Average Sales by City-State")
+    fig.update_layout(yaxis_autorange='reversed', xaxis_gridcolor='lightgray')
+    return fig
+
+def plot_sales_by_type_locale(df, target_col):
+    sales = df.groupby('type_locale')[target_col].mean().reset_index()
+    fig = px.pie(sales, values=target_col, names='type_locale', title="Sales Distribution by Type-Locale")
     return fig
 
 def plot_promotion_impact(df, target_col):
@@ -136,6 +178,44 @@ def plot_pacf(df, date_col, target_col):
         fig.update_layout(title='PACF for Store 1, GROCERY I', xaxis_title='Lag', yaxis_title='Partial Autocorrelation', yaxis_gridcolor='lightgray')
         return fig
 
+def train_xgboost_model(train_df, target_col):
+    train_df = train_df.copy()
+    train_df['date'] = train_df['date'].astype('category')
+    train_df['family'] = train_df['family'].astype('category')
+    train_df['city_state'] = train_df['city_state'].astype('category')
+    train_df['type_locale'] = train_df['type_locale'].astype('category')
+    
+    X_train, X_test, y_train, y_test = train_test_split(
+        train_df.loc[:, train_df.columns != target_col], 
+        train_df[target_col], 
+        test_size=0.33, 
+        random_state=42
+    )
+    
+    cat_attribs = ['date', 'family', 'city_state', 'type_locale']
+    full_pipeline = ColumnTransformer([('cat', OneHotEncoder(handle_unknown='ignore'), cat_attribs)], remainder='passthrough')
+    
+    encoder = full_pipeline.fit(X_train)
+    X_train = encoder.transform(X_train)
+    X_test = encoder.transform(X_test)
+    
+    model = XGBRegressor(n_estimators=10, max_depth=20, verbosity=2)
+    model.fit(X_train, y_train)
+    
+    score = model.score(X_test, y_test)
+    return model, encoder, score
+
+def predict_sales(model, encoder, test_df):
+    test_df = test_df.copy()
+    test_df['date'] = test_df['date'].astype('category')
+    test_df['family'] = test_df['family'].astype('category')
+    test_df['city_state'] = test_df['city_state'].astype('category')
+    test_df['type_locale'] = test_df['type_locale'].astype('category')
+    
+    X_test = encoder.transform(test_df)
+    predictions = model.predict(X_test)
+    return predictions
+
 def get_download_file(df, filename):
     buf = BytesIO()
     df.to_csv(buf, index=False)
@@ -151,10 +231,12 @@ def main():
             st.session_state['train_content'] = train_file.read()
             st.session_state['train_file'] = train_file
             train = load_data(BytesIO(st.session_state['train_content']), 'date', 'sales')
+            if 'Unnamed: 17' in train.columns:
+                train.drop('Unnamed: 17', axis=1, inplace=True)
             with st.form("train_config"):
                 st.dataframe(train.head())
                 date_col = st.selectbox("Date Column", train.columns, index=0)
-                target_col = st.selectbox("Target Column", train.columns, index=0)
+                target_col = st.selectbox("Target Column", train.columns, index=train.columns.get_loc('sales') if 'sales' in train.columns else 0)
                 if st.form_submit_button("Apply"):
                     st.session_state['train_df'] = train
                     st.session_state['train_date'] = date_col
@@ -164,20 +246,24 @@ def main():
         if st.session_state.get('train_configured'):
             train = st.session_state['train_df']
             if st.button("Generate Plots"):
-                fig1 = plot_sales_trends(train, st.session_state['train_date'], st.session_state['train_target'], 'D')
-                fig2 = plot_sales_trends(train, st.session_state['train_date'], st.session_state['train_target'], 'W')
-                fig3 = plot_sales_by_family(train, st.session_state['train_target'])
-                fig4 = plot_sales_by_store(train, st.session_state['train_target'])
-                fig5 = plot_promotion_impact(train, st.session_state['train_target'])
-                fig6 = plot_seasonal_decomposition(train, st.session_state['train_date'], st.session_state['train_target'])
-                fig7 = plot_rolling_stats(train, st.session_state['train_date'], st.session_state['train_target'])
-                fig8 = plot_periodogram(train, st.session_state['train_date'], st.session_state['train_target'])
-                fig9 = plot_lag_plot(train, st.session_state['train_date'], st.session_state['train_target'])
-                fig10 = plot_sales_by_dow(train, st.session_state['train_date'], st.session_state['train_target'])
-                fig11 = plot_sales_by_month(train, st.session_state['train_date'], st.session_state['train_target'])
-                fig12 = plot_correlation_heatmap(train, st.session_state['train_target'])
-                fig13 = plot_acf(train, st.session_state['train_date'], st.session_state['train_target'])
-                fig14 = plot_pacf(train, st.session_state['train_date'], st.session_state['train_target'])
+                fig1 = plot_sales_time_series(train, st.session_state['train_date'], st.session_state['train_target'])
+                fig2 = plot_sales_trends(train, st.session_state['train_date'], st.session_state['train_target'], 'D')
+                fig3 = plot_sales_trends(train, st.session_state['train_date'], st.session_state['train_target'], 'W')
+                fig4 = plot_sales_by_family(train, st.session_state['train_target'])
+                fig5 = plot_sales_by_store(train, st.session_state['train_target'])
+                fig6 = plot_sales_by_city_state(train, st.session_state['train_target'])
+                fig7 = plot_sales_by_type_locale(train, st.session_state['train_target'])
+                fig8 = plot_promotion_impact(train, st.session_state['train_target'])
+                fig9 = plot_seasonal_decomposition(train, st.session_state['train_date'], st.session_state['train_target'])
+                fig10 = plot_rolling_stats(train, st.session_state['train_date'], st.session_state['train_target'])
+                fig11 = plot_periodogram(train, st.session_state['train_date'], st.session_state['train_target'])
+                fig12 = plot_lag_plot(train, st.session_state['train_date'], st.session_state['train_target'])
+                fig13 = plot_sales_by_dow(train, st.session_state['train_date'], st.session_state['train_target'])
+                fig14 = plot_sales_by_month(train, st.session_state['train_date'], st.session_state['train_target'])
+                fig15 = plot_correlation_heatmap(train, st.session_state['train_target'])
+                fig16 = plot_acf(train, st.session_state['train_date'], st.session_state['train_target'])
+                fig17 = plot_pacf(train, st.session_state['train_date'], st.session_state['train_target'])
+                
                 st.plotly_chart(fig1)
                 st.plotly_chart(fig2)
                 st.plotly_chart(fig3)
@@ -190,8 +276,17 @@ def main():
                 st.plotly_chart(fig10)
                 st.plotly_chart(fig11)
                 st.plotly_chart(fig12)
-                if fig13: st.plotly_chart(fig13)
-                if fig14: st.plotly_chart(fig14)
+                st.plotly_chart(fig13)
+                st.plotly_chart(fig14)
+                st.plotly_chart(fig15)
+                if fig16:
+                    st.plotly_chart(fig16)
+                if fig17:
+                    st.plotly_chart(fig17)
+                
+                model, encoder, score = train_xgboost_model(train, st.session_state['train_target'])
+                st.write(f"XGBoost Model R² Score: {score:.4f}")
+                
                 st.download_button("Download Train Data", get_download_file(train, "train_data.csv")[0], "train_data.csv", "text/csv")
 
     with test_tab:
@@ -199,28 +294,46 @@ def main():
         if test_file:
             st.session_state['test_content'] = test_file.read()
             st.session_state['test_file'] = test_file
-            test = load_data(BytesIO(st.session_state['test_content']), 'date', 'sales')
+            test = load_data(BytesIO(st.session_state['test_content']), 'date', target_col=None)
             with st.form("test_config"):
                 st.dataframe(test.head())
                 date_col = st.selectbox("Date Column", test.columns, index=0)
+                target_col = st.selectbox("Target Column (optional)", ['None'] + list(test.columns), index=0)
                 if st.form_submit_button("Apply"):
                     st.session_state['test_df'] = test
                     st.session_state['test_date'] = date_col
+                    st.session_state['test_target'] = None if target_col == 'None' else target_col
                     st.session_state['test_configured'] = True
 
         if st.button("Generate Plots", key="test_plots"):
             if st.session_state.get('test_configured'):
                 test = st.session_state['test_df']
-                fig1 = plot_sales_trends(test, st.session_state['test_date'], 'sales', 'D')
-                fig2 = plot_sales_trends(test, st.session_state['test_date'], 'sales', 'W')
-                fig3 = plot_sales_by_family(test, 'sales')
-                fig4 = plot_sales_by_store(test, 'sales')
-                fig5 = plot_promotion_impact(test, 'sales')
+                target_col = st.session_state['test_target'] or 'onpromotion'
+                
+                if st.session_state.get('train_configured'):
+                    model, encoder, _ = train_xgboost_model(st.session_state['train_df'], st.session_state['train_target'])
+                    predictions = predict_sales(model, encoder, test)
+                    test['predicted_sales'] = predictions
+                    target_col = 'predicted_sales'
+                
+                fig1 = plot_sales_time_series(test, st.session_state['test_date'], target_col)
+                fig2 = plot_sales_trends(test, st.session_state['test_date'], target_col, 'D')
+                fig3 = plot_sales_trends(test, st.session_state['test_date'], target_col, 'W')
+                fig4 = plot_sales_by_family(test, target_col)
+                fig5 = plot_sales_by_store(test, target_col)
+                fig6 = plot_sales_by_city_state(test, target_col)
+                fig7 = plot_sales_by_type_locale(test, target_col)
+                fig8 = plot_promotion_impact(test, target_col)
+                
                 st.plotly_chart(fig1)
                 st.plotly_chart(fig2)
                 st.plotly_chart(fig3)
                 st.plotly_chart(fig4)
                 st.plotly_chart(fig5)
+                st.plotly_chart(fig6)
+                st.plotly_chart(fig7)
+                st.plotly_chart(fig8)
+                
                 st.download_button("Download Test Data", get_download_file(test, "test_data.csv")[0], "test_data.csv", "text/csv")
 
 if __name__ == "__main__":
