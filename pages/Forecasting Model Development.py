@@ -96,16 +96,33 @@ with training_tab:
                 test_content = test_file.getvalue()
                 test = pd.read_csv(BytesIO(test_content), dtype=test_dtypes)
                 
-                # Validate and convert dates (expecting DD-MM-YYYY)
-                train['date'] = pd.to_datetime(train['date'], format='%d-%m-%Y', errors='coerce')
-                test['date'] = pd.to_datetime(test['date'], format='%d-%m-%Y', errors='coerce')
+                # Attempt to parse dates with multiple formats
+                date_formats = [
+                    ('%Y-%m-%d', 'YYYY-MM-DD'),
+                    ('%d-%m-%Y', 'DD-MM-YYYY'),
+                    ('%d/%m/%Y', 'DD/MM/YYYY')
+                ]
                 
-                # Check for invalid dates
-                if train['date'].isna().any():
-                    st.error("Invalid date formats detected in train.csv. Please ensure dates are in DD-MM-YYYY format.")
+                # Parse train dates
+                train_date_parsed = False
+                for fmt, fmt_name in date_formats:
+                    train['date'] = pd.to_datetime(train['date'], format=fmt, errors='coerce')
+                    if not train['date'].isna().any():
+                        train_date_parsed = True
+                        break
+                if not train_date_parsed:
+                    st.error("Invalid date formats in train.csv. Tried YYYY-MM-DD, DD-MM-YYYY, DD/MM/YYYY. Please ensure dates are in one of these formats.")
                     return None, None, None, None, None, None, None
-                if test['date'].isna().any():
-                    st.error("Invalid date formats detected in test.csv. Please ensure dates are in DD-MM-YYYY format.")
+                
+                # Parse test dates
+                test_date_parsed = False
+                for fmt, fmt_name in date_formats:
+                    test['date'] = pd.to_datetime(test['date'], format=fmt, errors='coerce')
+                    if not test['date'].isna().any():
+                        test_date_parsed = True
+                        break
+                if not test_date_parsed:
+                    st.error("Invalid date formats in test.csv. Tried YYYY-MM-DD, DD-MM-YYYY, DD/MM/YYYY. Please ensure dates are in one of these formats.")
                     return None, None, None, None, None, None, None
                 
                 # Combine train and test
