@@ -1,167 +1,48 @@
 import streamlit as st
-import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
-import os
-import tempfile
-from PIL import Image
 import logging
 import sys
-from datetime import datetime
+import os
 
-# Set up logging
-logging.basicConfig(stream=sys.stdout, level=logging.INFO)
+# Set up logging (stdout and file)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler('app.log', mode='a')
+    ]
+)
 logger = logging.getLogger(__name__)
 
 # Global try-except for initialization
 try:
     # Streamlit app title
     st.title("Sales Forecasting Dashboard")
+    logger.info("Initializing Streamlit app")
 
-    # Initialize session state
-    if 'model_results' not in st.session_state:
+    # Initialize minimal session state
+    if 'initialized' not in st.session_state:
+        st.session_state.initialized = True
         st.session_state.model_results = {}
-    if 'train_set' not in st.session_state:
         st.session_state.train_set = None
-    if 'val_set' not in st.session_state:
         st.session_state.val_set = None
-    if 'test' not in st.session_state:
         st.session_state.test = None
-    if 'sub' not in st.session_state:
         st.session_state.sub = None
-    if 'feature_cols' not in st.session_state:
         st.session_state.feature_cols = None
-    if 'scaler' not in st.session_state:
         st.session_state.scaler = None
-    if 'le_store' not in st.session_state:
         st.session_state.le_store = None
-    if 'le_family' not in st.session_state:
         st.session_state.le_family = None
+    logger.info("Session state initialized")
 
     # Tabs
     training_tab, prediction_tab, specific_prediction_tab, forecasting_tab = st.tabs(["Training", "Prediction", "Specific Date Prediction", "Forecasting"])
+    logger.info("Tabs created")
 
     # Constants
     TRAIN_END = '2017-07-15'
     VAL_END = '2017-08-15'
-    MAX_GROUPS = 100  # Limit store-family pairs
-    MAX_MODELS = 2    # Limit default models
-
-    # Custom MAPE
-    def clipped_mape(y_true, y_pred):
-        y_true, y_pred = np.array(y_true), np.array(y_pred)
-        mask = y_true > 0
-        return np.mean(np.abs((y_true[mask] - y_pred[mask]) / y_true[mask])) * 100 if mask.sum() > 0 else 0.0
-
-    # Data processing function
-    def load_and_process_data(train_file, test_file, sub_file):
-        try:
-            logger.info("Loading CSV files")
-            train = pd.read_csv(train_file)
-            test = pd.read_csv(test_file)
-            sub = pd.read_csv(sub_file)
-            
-            # Validate required columns
-            required_train_cols = {'date', 'store_nbr', 'family', 'sales', 'onpromotion'}
-            required_test_cols = {'date', 'store_nbr', 'family', 'onpromotion', 'id'}
-            required_sub_cols = {'id', 'sales'}
-            if not (required_train_cols.issubset(train.columns) and 
-                    required_test_cols.issubset(test.columns) and 
-                    required_sub_cols.issubset(sub.columns)):
-                st.error("CSV files missing required columns.")
-                logger.error("Missing required columns")
-                st.stop()
-            
-            # Parse dates
-            train['date'] = pd.to_datetime(train['date'], dayfirst=True, errors='coerce')
-            test['date'] = pd.to_datetime(test['date'], dayfirst=True, errors='coerce')
-            train = train.dropna(subset=['date'])
-            test = test.dropna(subset=['date'])
-            
-            # Validate non-empty data
-            if train.empty or test.empty or sub.empty:
-                st.error("One or more CSV files are empty after processing.")
-                logger.error("Empty CSV files")
-                st.stop()
-            
-            # Limit data size
-            if len(train) > 500000 or len(test) > 50000:
-                st.error("Input data too large for cloud resources. Please use a smaller dataset.")
-                logger.error("Input data exceeds size limits")
-                st.stop()
-            
-            # Type conversions
-            train[['store_nbr', 'onpromotion']] = train[['store_nbr', 'onpromotion']].astype('int32')
-            test[['store_nbr', 'onpromotion']] = test[['store_nbr', 'onpromotion']].astype('int32')
-            train['sales'] = train['sales'].astype('float32')
-            sub['sales'] = sub['sales'].astype('float32')
-            
-            # Combine and aggregate
-            train['is_train'] = 1
-            test['is_train'] = 0
-            combined = pd.concat([train, test]).sort_values(['store_nbr', 'family', 'date'])
-            agg_dict = {'sales': 'mean', 'onpromotion': 'sum', 'is_train': 'first', 'id': 'first'}
-            combined = combined.groupby(['store_nbr', 'family', 'date']).agg(agg_dict).reset_index()
-            combined = combined.astype({'store_nbr': 'int32', 'family': 'category', 'date': 'datetime64[ns]', 
-                                       'sales': 'float32', 'onpromotion': 'int32', 'is_train': 'int8'})
-            
-            # Limit store-family pairs
-            store_families = combined[['store_nbr', 'family']].drop_duplicates()
-            if len(store_families) > MAX_GROUPS:
-                store_families = store_families.sample(n=MAX_GROUPS, random_state=42)
-                combined = combined.merge(store_families, on=['store_nbr', 'family'])
-                logger.warning(f"Limited to {MAX_GROUPS} store-family pairs")
-            
-            # Ensure complete date range
-            date_range = pd.date_range(start=combined['date'].min(), end=combined['date'].max(), freq='D')
-            index = pd.MultiIndex.from_product([store_families['store_nbr'], store_families['family'], date_range], 
-                                               names=['store_nbr', 'family', 'date'])
-            combined = combined.set_index(['store_nbr', 'family', 'date']).reindex(index).reset_index()
-            combined['sales'] = combined['sales'].fillna(0).astype('float32')
-            combined['onpromotion'] = combined['onpromotion'].fillna(0).astype('int32')
-            combined['is_train'] = combined['is_train'].fillna(0).astype('int8')
-            
-            # Add minimal features
-            combined['day'] = combined['date'].dt.day.astype('int8')
-            combined['dow'] = combined['date'].dt.dayofweek.astype('int8')
-            combined['month'] = combined['date'].dt.month.astype('int8')
-            combined['lag_7'] = combined.groupby(['store_nbr', 'family'])['sales'].shift(7).fillna(0).astype('float32')
-            
-            # Encode categorical variables
-            from sklearn.preprocessing import LabelEncoder
-            le_store = LabelEncoder()
-            le_family = LabelEncoder()
-            combined['store_nbr_encoded'] = le_store.fit_transform(combined['store_nbr']).astype('int8')
-            combined['family_encoded'] = le_family.fit_transform(combined['family']).astype('int8')
-            
-            # Define features
-            feature_cols = ['onpromotion', 'day', 'dow', 'month', 'store_nbr_encoded', 'family_encoded', 'lag_7']
-            
-            # Scale features
-            from sklearn.preprocessing import StandardScaler
-            scaler = StandardScaler()
-            combined[feature_cols] = scaler.fit_transform(combined[feature_cols]).astype('float32')
-            
-            # Split data
-            train = combined[combined['is_train'] == 1]
-            test = combined[combined['is_train'] == 0].drop(['sales'], axis=1)
-            train_set = train[train['date'] <= TRAIN_END]
-            val_set = train[(train['date'] > TRAIN_END) & (train['date'] <= VAL_END)]
-            
-            return train_set, val_set, test, sub, feature_cols, scaler, le_store, le_family
-        except Exception as e:
-            logger.error(f"Error in load_and_process_data: {str(e)}")
-            st.error(f"Error processing data: {str(e)}")
-            st.stop()
-
-    # Prepare sequence data for LSTM/GRU
-    def prepare_sequence_data(group, seq_length=7):
-        data = group['sales'].values
-        X, y = [], []
-        for i in range(len(data) - seq_length):
-            X.append(data[i:i + seq_length])
-            y.append(data[i + seq_length])
-        return np.array(X), np.array(y)
+    MAX_GROUPS = 50   # Reduced store-family pairs
+    MAX_MODELS = 1    # Limit to 1 model by default
 
     # Training Tab
     with training_tab:
@@ -174,8 +55,7 @@ try:
         sub_file = st.file_uploader("Upload Submission CSV", type="csv", key="uploader_sub")
         
         # Model selection
-        models = ["ARIMA", "SARIMA", "Prophet", "XGBoost", "LightGBM", "LSTM", "GRU", 
-                  "ETS", "TBATS", "Holt-Winters", "VAR", "Random Forest"]
+        models = ["ARIMA", "SARIMA", "Prophet", "XGBoost", "LightGBM", "ETS", "TBATS", "Holt-Winters", "VAR", "Random Forest"]
         selected_models = st.multiselect("Select Models to Train", models, default=["ARIMA"], max_selections=MAX_MODELS)
         
         # Train button
@@ -186,6 +66,118 @@ try:
         if train_button and train_file and test_file and sub_file and selected_models:
             with st.spinner("Processing data..."):
                 try:
+                    import pandas as pd
+                    import numpy as np
+                    from datetime import datetime
+                    logger.info("Imported pandas, numpy, datetime")
+
+                    # Data processing function
+                    def load_and_process_data(train_file, test_file, sub_file):
+                        try:
+                            logger.info("Loading CSV files")
+                            train = pd.read_csv(train_file)
+                            test = pd.read_csv(test_file)
+                            sub = pd.read_csv(sub_file)
+                            
+                            # Validate required columns
+                            required_train_cols = {'date', 'store_nbr', 'family', 'sales', 'onpromotion'}
+                            required_test_cols = {'date', 'store_nbr', 'family', 'onpromotion', 'id'}
+                            required_sub_cols = {'id', 'sales'}
+                            if not (required_train_cols.issubset(train.columns) and 
+                                    required_test_cols.issubset(test.columns) and 
+                                    required_sub_cols.issubset(sub.columns)):
+                                st.error("CSV files missing required columns.")
+                                logger.error("Missing required columns")
+                                st.stop()
+                            
+                            # Limit data size
+                            if len(train) > 100000 or len(test) > 20000:
+                                st.error("Input data too large for cloud resources. Please use a smaller dataset.")
+                                logger.error("Input data exceeds size limits")
+                                st.stop()
+                            
+                            # Parse dates
+                            train['date'] = pd.to_datetime(train['date'], dayfirst=True, errors='coerce')
+                            test['date'] = pd.to_datetime(test['date'], dayfirst=True, errors='coerce')
+                            train = train.dropna(subset=['date'])
+                            test = test.dropna(subset=['date'])
+                            
+                            # Validate non-empty data
+                            if train.empty or test.empty or sub.empty:
+                                st.error("One or more CSV files are empty after processing.")
+                                logger.error("Empty CSV files")
+                                st.stop()
+                            
+                            # Type conversions
+                            train[['store_nbr', 'onpromotion']] = train[['store_nbr', 'onpromotion']].astype('int32')
+                            test[['store_nbr', 'onpromotion']] = test[['store_nbr', 'onpromotion']].astype('int32')
+                            train['sales'] = train['sales'].astype('float32')
+                            sub['sales'] = sub['sales'].astype('float32')
+                            
+                            # Combine and aggregate
+                            train['is_train'] = 1
+                            test['is_train'] = 0
+                            combined = pd.concat([train, test]).sort_values(['store_nbr', 'family', 'date'])
+                            agg_dict = {'sales': 'mean', 'onpromotion': 'sum', 'is_train': 'first', 'id': 'first'}
+                            combined = combined.groupby(['store_nbr', 'family', 'date']).agg(agg_dict).reset_index()
+                            combined = combined.astype({'store_nbr': 'int32', 'family': 'category', 'date': 'datetime64[ns]', 
+                                                       'sales': 'float32', 'onpromotion': 'int32', 'is_train': 'int8'})
+                            
+                            # Limit store-family pairs
+                            store_families = combined[['store_nbr', 'family']].drop_duplicates()
+                            if len(store_families) > MAX_GROUPS:
+                                store_families = store_families.sample(n=MAX_GROUPS, random_state=42)
+                                combined = combined.merge(store_families, on=['store_nbr', 'family'])
+                                logger.warning(f"Limited to {MAX_GROUPS} store-family pairs")
+                            
+                            # Ensure complete date range
+                            date_range = pd.date_range(start=combined['date'].min(), end=combined['date'].max(), freq='D')
+                            index = pd.MultiIndex.from_product([store_families['store_nbr'], store_families['family'], date_range], 
+                                                               names=['store_nbr', 'family', 'date'])
+                            combined = combined.set_index(['store_nbr', 'family', 'date']).reindex(index).reset_index()
+                            combined['sales'] = combined['sales'].fillna(0).astype('float32')
+                            combined['onpromotion'] = combined['onpromotion'].fillna(0).astype('int32')
+                            combined['is_train'] = combined['is_train'].fillna(0).astype('int8')
+                            
+                            # Add minimal features
+                            combined['day'] = combined['date'].dt.day.astype('int8')
+                            combined['dow'] = combined['date'].dt.dayofweek.astype('int8')
+                            combined['month'] = combined['date'].dt.month.astype('int8')
+                            combined['lag_7'] = combined.groupby(['store_nbr', 'family'])['sales'].shift(7).fillna(0).astype('float32')
+                            
+                            # Encode categorical variables
+                            from sklearn.preprocessing import LabelEncoder
+                            le_store = LabelEncoder()
+                            le_family = LabelEncoder()
+                            combined['store_nbr_encoded'] = le_store.fit_transform(combined['store_nbr']).astype('int8')
+                            combined['family_encoded'] = le_family.fit_transform(combined['family']).astype('int8')
+                            
+                            # Define features
+                            feature_cols = ['onpromotion', 'day', 'dow', 'month', 'store_nbr_encoded', 'family_encoded', 'lag_7']
+                            
+                            # Scale features
+                            from sklearn.preprocessing import StandardScaler
+                            scaler = StandardScaler()
+                            combined[feature_cols] = scaler.fit_transform(combined[feature_cols]).astype('float32')
+                            
+                            # Split data
+                            train = combined[combined['is_train'] == 1]
+                            test = combined[combined['is_train'] == 0].drop(['sales'], axis=1)
+                            train_set = train[train['date'] <= TRAIN_END]
+                            val_set = train[(train['date'] > TRAIN_END) & (train['date'] <= VAL_END)]
+                            
+                            return train_set, val_set, test, sub, feature_cols, scaler, le_store, le_family
+                        except Exception as e:
+                            logger.error(f"Error in load_and_process_data: {str(e)}")
+                            st.error(f"Error processing data: {str(e)}")
+                            st.stop()
+
+                    # Custom MAPE
+                    def clipped_mape(y_true, y_pred):
+                        y_true, y_pred = np.array(y_true), np.array(y_pred)
+                        mask = y_true > 0
+                        return np.mean(np.abs((y_true[mask] - y_pred[mask]) / y_true[mask])) * 100 if mask.sum() > 0 else 0.0
+
                     # Load and process data
                     train_set, val_set, test, sub, feature_cols, scaler, le_store, le_family = load_and_process_data(train_file, test_file, sub_file)
                     
@@ -197,12 +189,8 @@ try:
                     st.session_state.scaler = scaler
                     st.session_state.le_store = le_store
                     st.session_state.le_family = le_family
-                    
-                    # Deferred imports
-                    from sklearn.metrics import mean_squared_error, mean_absolute_error
-                    from sklearn.ensemble import RandomForestRegressor
-                    import joblib
-                    
+                    logger.info("Data processed and stored in session state")
+
                     # Prediction generation
                     for model_name in selected_models:
                         st.write(f"Generating predictions for {model_name}...")
@@ -247,6 +235,8 @@ try:
                                         preds = forecast['yhat'].values
                                     
                                     elif model_name in ["XGBoost", "LightGBM", "Random Forest"]:
+                                        from sklearn.ensemble import RandomForestRegressor
+                                        import joblib
                                         X_train = train_group[feature_cols]
                                         y_train = np.log1p(train_group['sales'].clip(0))
                                         X_val = val_group[feature_cols]
@@ -262,29 +252,6 @@ try:
                                         preds_log = model.predict(X_val)
                                         preds = np.expm1(preds_log).clip(0)
                                         joblib.dump(model, os.path.join(temp_dir, f"{model_name.lower()}_{store}_{family}.pt"))
-                                    
-                                    elif model_name in ["LSTM", "GRU"]:
-                                        import tensorflow as tf
-                                        from tensorflow.keras.models import Sequential
-                                        from tensorflow.keras.layers import LSTM, GRU, Dense
-                                        X, y = prepare_sequence_data(train_group, seq_length=7)
-                                        if len(X) > 0:
-                                            X = X.reshape((X.shape[0], X.shape[1], 1))
-                                            model = Sequential([
-                                                (LSTM if model_name == "LSTM" else GRU)(32, input_shape=(7, 1)),
-                                                Dense(1)
-                                            ])
-                                            model.compile(optimizer='adam', loss='mse')
-                                            model.fit(X, y, epochs=3, batch_size=16, verbose=0)
-                                            last_seq = train_group['sales'].tail(7).values.reshape(1, 7, 1)
-                                            preds = []
-                                            for _ in range(len(actuals)):
-                                                pred = model.predict(last_seq, verbose=0)[0,0]
-                                                preds.append(pred)
-                                                last_seq = np.roll(last_seq, -1)
-                                                last_seq[0, -1, 0] = pred
-                                            preds = np.array(preds).clip(0)
-                                            model.save(os.path.join(temp_dir, f"{model_name.lower()}_{store}_{family}.pt"))
                                     
                                     elif model_name == "ETS":
                                         from statsmodels.tsa.holtwinters import ExponentialSmoothing
@@ -321,6 +288,7 @@ try:
                             pred_dict[(store, family)] = {'dates': dates, 'actuals': actuals, 'preds': preds}
                         
                         # Aggregate metrics
+                        from sklearn.metrics import mean_squared_error, mean_absolute_error
                         all_actuals = []
                         all_preds = []
                         for key, data in pred_dict.items():
@@ -335,6 +303,8 @@ try:
                         }
                         
                         # Plot aggregate predictions
+                        import matplotlib.pyplot as plt
+                        from PIL import Image
                         n_plot = min(100, len(all_actuals))
                         plt.figure(figsize=(10, 5))
                         plt.plot(dates[:n_plot], all_actuals[:n_plot], label='Actual')
@@ -365,6 +335,7 @@ try:
                         col4.metric("MAPE (%)", f"{metrics['mape']:.2f}")
                     
                     st.success("Predictions generated!")
+                    logger.info("Predictions completed")
                 except Exception as e:
                     logger.error(f"Error during training: {str(e)}")
                     st.error(f"Training failed: {str(e)}")
@@ -376,6 +347,7 @@ try:
         st.header("Visualize Predictions")
         
         if st.session_state.train_set is not None:
+            import pandas as pd
             store_nbrs = sorted(st.session_state.train_set['store_nbr'].unique())
             families = sorted(st.session_state.train_set['family'].unique())
             
@@ -385,6 +357,8 @@ try:
             selected_models = st.multiselect("Select Models to Visualize", models, default=["ARIMA"], key="viz_models")
             
             if selected_models:
+                import matplotlib.pyplot as plt
+                from PIL import Image
                 for model_name in selected_models:
                     st.subheader(f"{model_name} Predictions")
                     if model_name in st.session_state.model_results:
@@ -434,6 +408,8 @@ try:
         st.header("Predict Sales for Specific Date")
         
         if st.session_state.train_set is not None:
+            import pandas as pd
+            from datetime import datetime
             store_nbrs = sorted(st.session_state.train_set['store_nbr'].unique())
             families = sorted(st.session_state.train_set['family'].unique())
             
@@ -459,6 +435,11 @@ try:
             if predict_button:
                 with st.spinner("Generating prediction..."):
                     try:
+                        import numpy as np
+                        import matplotlib.pyplot as plt
+                        from PIL import Image
+                        logger.info("Starting specific date prediction")
+                        
                         spec_data = []
                         for date in target_dates:
                             spec_data.append({
@@ -496,21 +477,6 @@ try:
                                         predictions_log = model.predict(X_spec)
                                         predictions = np.expm1(predictions_log).clip(0)
                                         spec_df['predicted_sales'] = predictions
-                                    else:
-                                        spec_df['predicted_sales'] = np.zeros(len(spec_df))
-                                elif model_name in ["LSTM", "GRU"]:
-                                    import tensorflow as tf
-                                    model_path = os.path.join(tempfile.gettempdir(), f"{model_name.lower()}_{store_nbr}_{family}.pt")
-                                    if os.path.exists(model_path):
-                                        model = tf.keras.models.load_model(model_path)
-                                        last_seq = train_group['sales'].tail(7).values.reshape(1, 7, 1)
-                                        predictions = []
-                                        for _ in range(len(spec_df)):
-                                            pred = model.predict(last_seq, verbose=0)[0,0]
-                                            predictions.append(pred)
-                                            last_seq = np.roll(last_seq, -1)
-                                            last_seq[0, -1, 0] = pred
-                                        spec_df['predicted_sales'] = np.clip(predictions, 0, None)
                                     else:
                                         spec_df['predicted_sales'] = np.zeros(len(spec_df))
                                 else:
@@ -598,6 +564,8 @@ try:
         st.header("Forecast Sales for Specific Period")
         
         if st.session_state.train_set is not None:
+            import pandas as pd
+            from datetime import datetime
             store_nbrs = sorted(st.session_state.train_set['store_nbr'].unique())
             families = sorted(st.session_state.train_set['family'].unique())
             
@@ -623,6 +591,11 @@ try:
             if forecast_button:
                 with st.spinner("Generating forecast..."):
                     try:
+                        import numpy as np
+                        import matplotlib.pyplot as plt
+                        from PIL import Image
+                        logger.info("Starting forecasting")
+                        
                         forecast_data = []
                         for date in target_dates:
                             forecast_data.append({
@@ -660,21 +633,6 @@ try:
                                         predictions_log = model.predict(X_forecast)
                                         predictions = np.expm1(predictions_log).clip(0)
                                         forecast_df['predicted_sales'] = predictions
-                                    else:
-                                        forecast_df['predicted_sales'] = np.zeros(len(forecast_df))
-                                elif model_name in ["LSTM", "GRU"]:
-                                    import tensorflow as tf
-                                    model_path = os.path.join(tempfile.gettempdir(), f"{model_name.lower()}_{store_nbr}_{family}.pt")
-                                    if os.path.exists(model_path):
-                                        model = tf.keras.models.load_model(model_path)
-                                        last_seq = train_group['sales'].tail(7).values.reshape(1, 7, 1)
-                                        predictions = []
-                                        for _ in range(len(forecast_df)):
-                                            pred = model.predict(last_seq, verbose=0)[0,0]
-                                            predictions.append(pred)
-                                            last_seq = np.roll(last_seq, -1)
-                                            last_seq[0, -1, 0] = pred
-                                        forecast_df['predicted_sales'] = np.clip(predictions, 0, None)
                                     else:
                                         forecast_df['predicted_sales'] = np.zeros(len(forecast_df))
                                 else:
