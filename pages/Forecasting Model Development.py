@@ -129,7 +129,6 @@ with training_tab:
                 st.write(f"Generating predictions for {model_name}...")
                 temp_dir = tempfile.gettempdir()
                 val_dates = pd.date_range('2017-07-16', '2017-08-15')
-                val_steps = len(val_dates)
                 pred_dict = {}
                 actuals = []
                 preds = []
@@ -147,12 +146,14 @@ with training_tab:
                         train_group = train_set[(train_set['store_nbr'] == store) & (train_set['family'] == family)]
                         group_sales = group['sales'].values
                         if model_name == "Naive":
-                            pred = np.full(len(group_sales), train_group['sales'].iloc[-1])
+                            last_sale = train_group['sales'].iloc[-1] if not train_group.empty else 0.0
+                            pred = np.full(len(group_sales), last_sale)
                         elif model_name == "Seasonal Naive":
-                            last_season = train_group['sales'].tail(7).values
+                            last_season = train_group['sales'].tail(7).values if len(train_group) >= 7 else np.zeros(7)
                             pred = np.tile(last_season, (len(group_sales) // 7) + 1)[:len(group_sales)]
                         elif model_name == "Moving Average":
-                            pred = np.full(len(group_sales), train_group['sales'].tail(7).mean())
+                            ma_value = train_group['sales'].tail(7).mean() if len(train_group) >= 7 else 0.0
+                            pred = np.full(len(group_sales), ma_value)
                         pred_dict[(store, family)] = pred.tolist()
                         actuals.extend(group_sales)
                         preds.extend(pred)
