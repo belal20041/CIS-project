@@ -4,7 +4,6 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 import missingno as msno
-from sklearn.preprocessing import StandardScaler, LabelEncoder
 from statsmodels.tsa.seasonal import seasonal_decompose
 from statsmodels.tsa.stattools import acf, pacf
 from scipy.signal import periodogram
@@ -30,10 +29,10 @@ def load_data(file, date_col, target_col):
     if hasattr(file, 'seek'):
         file.seek(0)
     df = pd.read_csv(file)
-    df[date_col] = pd.to_datetime(df[date_col], format='%m/%d/%Y')
+    df[date_col] = pd.to_datetime(df[date_col], errors='coerce')  # Removed strict format to handle varying date formats
     df[['store_nbr', 'onpromotion']] = df[['store_nbr', 'onpromotion']].astype('int32')
     if target_col and target_col in df.columns:
-        df[target_col] = df[target_col].astype('float32')
+        df[target_col] = pd.to_numeric(df[target_col], errors='coerce').astype('float32')
     df.dropna(subset=[date_col], inplace=True)
     return df
 
@@ -41,7 +40,7 @@ def prepare_data(train, test, date_col, target_col):
     train['is_train'] = 1
     test['is_train'] = 0
     combined = pd.concat([train, test]).sort_values(['store_nbr', 'family', date_col])
-    agg_dict = {target_col: 'sum', 'onpromotion': 'sum', 'is_train': 'first', 'id': 'first'}  # Changed to 'sum' for sales aggregation
+    agg_dict = {target_col: 'sum', 'onpromotion': 'sum', 'is_train': 'first', 'id': 'first'}
     combined = combined.groupby(['store_nbr', 'family', date_col]).agg(agg_dict).reset_index()
     combined = combined.astype({'store_nbr': 'int32', 'family': 'category', date_col: 'datetime64[ns]', 
                                 target_col: 'float32', 'onpromotion': 'int32', 'is_train': 'int8'})
@@ -66,10 +65,6 @@ def add_features(combined, date_col, target_col):
     for lag in lags:
         combined[f'lag_{lag}'] = combined.groupby(['store_nbr', 'family'])[target_col].shift(lag).astype('float32')
     combined['roll_mean_7'] = combined.groupby(['store_nbr', 'family'])[target_col].shift(1).rolling(7, min_periods=1).mean().astype('float32')
-    combined['store_nbr_encoded'] = LabelEncoder().fit_transform(combined['store_nbr']).astype('int8')
-    combined['family_encoded'] = LabelEncoder().fit_transform(combined['family']).astype('int8')
-    feature_cols = ['onpromotion', 'day', 'dow', 'month', 'year', 'sin_month', 'store_nbr_encoded', 'family_encoded', 'lag_7', 'lag_14', 'roll_mean_7']
-    combined[feature_cols] = StandardScaler().fit_transform(combined[feature_cols].fillna(0)).astype('float32')
     return combined
 
 def split_data(combined, date_col, target_col):
@@ -84,6 +79,19 @@ def get_download_file(df, filename):
     df.to_csv(buf, index=False)
     buf.seek(0)
     return buf.getvalue(), 'text/csv'
+
+def reclassify_family(df):
+    family_map = {
+        'AUTOMOTIVE': 'Tools', 'HARDWARE': 'Tools', 'LAWN AND GARDEN': 'Tools', 'PLAYERS AND ELECTRONICS': 'Tools',
+        'BEAUTY': 'LifeStyle', 'LINGERIE': 'LifeStyle', 'LADIESWEAR': 'LifeStyle', 'PERSONAL CARE': 'LifeStyle',
+        'CELEBRATION': 'LifeStyle', 'MAGAZINES': 'LifeStyle', 'BOOKS': 'LifeStyle', 'BABY CARE': 'LifeStyle',
+        'HOME APPLIANCES': 'Home', 'HOME AND KITCHEN I': 'Home', 'HOME AND KITCHEN II': 'Home',
+        'HOME CARE': 'Home', 'SCHOOL AND OFFICE SUPPLIES': 'Home',
+        'GROCERY II': 'Food', 'PET SUPPLIES': 'Food', 'SEAFOOD': 'Food', 'LIQUOR,WINE,BEER': 'Food',
+        'DELI': 'Daily', 'EGGS': 'Daily'
+    }
+    df['family'] = df['family'].replace(family_map)
+    return df
 
 def explore_data(df, date_col, target_col, numeric_cols, categorical_cols, dataset_type):
     temp_dir = tempfile.gettempdir()
@@ -124,33 +132,69 @@ def explore_data(df, date_col, target_col, numeric_cols, categorical_cols, datas
         st.pyplot(fig)
         plt.close(fig)
 
-        # 3. Sales by Product Family
-        sales_by_family = df.groupby('family')['sales'].sum().sort_values(ascending=False)
+        # 3. Weekly Sales Trends
+        df_weekly = df.set_index(date_col)['sales'].resample('W').sum().reset_index()
         fig, ax = plt.subplots(figsize=(12, 5))
-        sales_by_family.plot(kind='bar', ax=ax, color='skyblue')
+        ax.plot(df_weekly[date_col], df_weekly['sales'], color='blue')
         ax.grid(True, alpha=0.3)
-        ax.set_title("Total Sales by Product Category")
-        ax.set_xlabel("Product Family")
+        ax.set_title("Weekly Sales Trends")
+        ax.set_xlabel("Date")
         ax.set_ylabel("Total Sales")
         plt.xticks(rotation=45)
+        plt.savefig(os.path.join(temp_dir, f"{dataset_type}_weekly.png"))
+        st.pyplot(fig)
+        plt.close(fig)
+
+        # 4. Sales by Reclassified Product Family
+        df = reclassify_family(df.copy())
+        sales_by_family = df.groupby('family')['sales'].mean().sort_values(ascending=False)
+        fig, ax = plt.subplots(figsize=(25, 15))
+        sns.barplot(x=sales_by_family.values, y=sales_by_family.index, ax=ax, color='skyblue')
+        ax.grid(True, alpha=0.3)
+        ax.set_title("Average Sales by Product Category")
+        ax.set_xlabel("Average Sales")
+        ax.set_ylabel("Product Family")
         plt.savefig(os.path.join(temp_dir, f"{dataset_type}_family_sales.png"))
         st.pyplot(fig)
         plt.close(fig)
 
-        # 4. Sales by Store and City
-        sales_by_store = df.groupby(['store_nbr', 'city'])['sales'].sum().reset_index()
-        fig, ax = plt.subplots(figsize=(12, 5))
-        sns.barplot(data=sales_by_store, x='store_nbr', y='sales', hue='city', ax=ax, palette='muted')
+        # 5. Sales by Store Number
+        sales_by_store = df.groupby('store_nbr')['sales'].mean().sort_values(ascending=False)
+        fig, ax = plt.subplots(figsize=(25, 15))
+        sns.barplot(x=sales_by_store.index, y=sales_by_store.values, ax=ax, color='skyblue', order=sales_by_store.index)
         ax.grid(True, alpha=0.3)
-        ax.set_title("Sales by Store Across Cities")
+        ax.set_title("Average Sales by Store Number")
         ax.set_xlabel("Store Number")
-        ax.set_ylabel("Total Sales")
-        plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
-        plt.savefig(os.path.join(temp_dir, f"{dataset_type}_store_city_sales.png"))
+        ax.set_ylabel("Average Sales")
+        plt.savefig(os.path.join(temp_dir, f"{dataset_type}_store_sales.png"))
         st.pyplot(fig)
         plt.close(fig)
 
-        # 5. Impact of Promotions on Sales
+        # 6. Sales by City-State
+        df['city_state'] = df['city'] + '_' + df['state']
+        sales_by_city_state = df.groupby('city_state')['sales'].mean().sort_values(ascending=False)
+        fig, ax = plt.subplots(figsize=(30, 20))
+        sns.barplot(x=sales_by_city_state.values, y=sales_by_city_state.index, ax=ax, color='skyblue')
+        ax.grid(True, alpha=0.3)
+        ax.set_title("Average Sales by City-State")
+        ax.set_xlabel("Average Sales")
+        ax.set_ylabel("City-State")
+        plt.savefig(os.path.join(temp_dir, f"{dataset_type}_city_state_sales.png"))
+        st.pyplot(fig)
+        plt.close(fig)
+
+        # 7. Sales by Type-Locale
+        df['type_locale'] = df['type_y'] + '_' + df['locale']
+        sales_by_type_locale = df.groupby('type_locale')['sales'].mean()
+        fig, ax = plt.subplots(figsize=(20, 10))
+        sales_by_type_locale.plot.pie(autopct='%1.1f%%', ax=ax, startangle=90, colors=sns.color_palette('muted'))
+        ax.set_title("Sales Distribution by Type-Locale")
+        ax.set_ylabel("")
+        plt.savefig(os.path.join(temp_dir, f"{dataset_type}_type_locale_pie.png"))
+        st.pyplot(fig)
+        plt.close(fig)
+
+        # 8. Impact of Promotions on Sales
         fig, ax = plt.subplots(figsize=(12, 5))
         sns.boxplot(data=df, x='onpromotion', y='sales', hue='family', ax=ax, palette='muted')
         ax.grid(True, alpha=0.3)
@@ -162,20 +206,7 @@ def explore_data(df, date_col, target_col, numeric_cols, categorical_cols, datas
         st.pyplot(fig)
         plt.close(fig)
 
-        # 6. Sales During Holidays vs. Non-Holidays
-        df['is_holiday'] = df['type_y'].apply(lambda x: 1 if x == 'Holiday' else 0)
-        fig, ax = plt.subplots(figsize=(12, 5))
-        sns.boxplot(data=df, x='is_holiday', y='sales', hue='family', ax=ax, palette='muted')
-        ax.grid(True, alpha=0.3)
-        ax.set_title("Sales: Holidays vs. Non-Holidays (by Family)")
-        ax.set_xlabel("Holiday (0 = No, 1 = Yes)")
-        ax.set_ylabel("Sales")
-        plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
-        plt.savefig(os.path.join(temp_dir, f"{dataset_type}_holiday_sales.png"))
-        st.pyplot(fig)
-        plt.close(fig)
-
-        # 7. Sales vs. Oil Price
+        # 9. Sales vs. Oil Price
         fig, ax = plt.subplots(figsize=(12, 5))
         sns.scatterplot(data=df, x='dcoilwtico', y='sales', ax=ax, color='blue', alpha=0.5)
         sns.regplot(data=df, x='dcoilwtico', y='sales', ax=ax, scatter=False, color='red')
@@ -187,7 +218,8 @@ def explore_data(df, date_col, target_col, numeric_cols, categorical_cols, datas
         st.pyplot(fig)
         plt.close(fig)
 
-        # 8. Monthly Sales Seasonality
+        # 10. Monthly Sales Seasonality
+        df['month'] = df[date_col].dt.month
         sales_by_month = df.groupby(['month', 'family'])['sales'].mean().reset_index()
         fig, ax = plt.subplots(figsize=(12, 5))
         sns.boxplot(data=sales_by_month, x='month', y='sales', hue='family', ax=ax, palette='muted')
@@ -200,7 +232,112 @@ def explore_data(df, date_col, target_col, numeric_cols, categorical_cols, datas
         st.pyplot(fig)
         plt.close(fig)
 
-        # 9. Heatmap: Sales Across Stores and Families
+        # 11. Day-of-Week Sales Patterns
+        df['dow'] = df[date_col].dt.dayofweek
+        sales_by_dow = df.groupby(['dow', 'family'])['sales'].mean().reset_index()
+        fig, ax = plt.subplots(figsize=(12, 5))
+        sns.boxplot(data=sales_by_dow, x='dow', y='sales', hue='family', ax=ax, palette='muted')
+        ax.grid(True, alpha=0.3)
+        ax.set_title("Average Sales by Day of Week (by Family)")
+        ax.set_xlabel("Day of Week (0=Mon, 6=Sun)")
+        ax.set_ylabel("Average Sales")
+        plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+        plt.savefig(os.path.join(temp_dir, f"{dataset_type}_dow_sales.png"))
+        st.pyplot(fig)
+        plt.close(fig)
+
+        # 12. Seasonal Decomposition (Monthly)
+        df_ts = df.set_index(date_col)['sales'].resample('M').sum()
+        if len(df_ts) >= 24:  # Ensure enough data for decomposition (at least 2 years)
+            decomp = seasonal_decompose(df_ts, model='additive', period=12)
+            fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(12, 8))
+            decomp.trend.plot(ax=ax1, color='blue')
+            ax1.set_title("Trend Component")
+            ax1.grid(True, alpha=0.3)
+            decomp.seasonal.plot(ax=ax2, color='blue')
+            ax2.set_title("Seasonal Component")
+            ax2.grid(True, alpha=0.3)
+            decomp.resid.plot(ax=ax3, color='blue')
+            ax3.set_title("Residual Component")
+            ax3.grid(True, alpha=0.3)
+            plt.tight_layout()
+            plt.savefig(os.path.join(temp_dir, f"{dataset_type}_decomp.png"))
+            st.pyplot(fig)
+            plt.close(fig)
+        else:
+            st.write("Not enough data for seasonal decomposition (requires at least 24 months).")
+
+        # 13. Autocorrelation (ACF)
+        n_lags = 30
+        acf_vals, acf_confint = acf(df[target_col].dropna(), nlags=n_lags, alpha=0.05, fft=False)
+        fig, ax = plt.subplots(figsize=(12, 5))
+        plt.stem(range(len(acf_vals)), acf_vals)
+        plt.fill_between(range(len(acf_vals)), acf_confint[:, 0] - acf_vals, acf_confint[:, 1] - acf_vals, alpha=0.2)
+        plt.axhline(0, color='black', linestyle='--')
+        plt.grid(True, alpha=0.3)
+        plt.title("Autocorrelation (ACF) of Sales")
+        plt.xlabel("Lag")
+        plt.ylabel("Autocorrelation")
+        plt.savefig(os.path.join(temp_dir, f"{dataset_type}_acf.png"))
+        st.pyplot(fig)
+        plt.close(fig)
+
+        # 14. Partial Autocorrelation (PACF)
+        pacf_vals, pacf_confint = pacf(df[target_col].dropna(), nlags=n_lags, alpha=0.05)
+        fig, ax = plt.subplots(figsize=(12, 5))
+        plt.stem(range(len(pacf_vals)), pacf_vals)
+        plt.fill_between(range(len(pacf_vals)), pacf_confint[:, 0] - pacf_vals, pacf_confint[:, 1] - pacf_vals, alpha=0.2)
+        plt.axhline(0, color='black', linestyle='--')
+        plt.grid(True, alpha=0.3)
+        plt.title("Partial Autocorrelation (PACF) of Sales")
+        plt.xlabel("Lag")
+        plt.ylabel("Partial Autocorrelation")
+        plt.savefig(os.path.join(temp_dir, f"{dataset_type}_pacf.png"))
+        st.pyplot(fig)
+        plt.close(fig)
+
+        # 15. Lag Plot
+        lag = 1
+        fig, ax = plt.subplots(figsize=(12, 5))
+        plt.scatter(df[target_col].shift(lag), df[target_col], alpha=0.5, color='blue')
+        plt.grid(True, alpha=0.3)
+        plt.title(f"Lag Plot (Lag={lag})")
+        plt.xlabel(f"Sales (t-{lag})")
+        plt.ylabel("Sales (t)")
+        plt.savefig(os.path.join(temp_dir, f"{dataset_type}_lag.png"))
+        st.pyplot(fig)
+        plt.close(fig)
+
+        # 16. Periodogram
+        freq, psd = periodogram(df[target_col].dropna())
+        fig, ax = plt.subplots(figsize=(12, 5))
+        plt.plot(freq, psd, color='blue')
+        plt.axhline(0, color='black', linestyle='--')
+        plt.grid(True, alpha=0.3)
+        plt.title("Periodogram of Sales")
+        plt.xlabel("Frequency")
+        plt.ylabel("Power Spectral Density")
+        plt.savefig(os.path.join(temp_dir, f"{dataset_type}_periodogram.png"))
+        st.pyplot(fig)
+        plt.close(fig)
+
+        # 17. Rolling Statistics for Stationarity
+        rolling = df.set_index(date_col)['sales'].rolling(window=30).agg(['mean', 'std']).dropna()
+        fig, ax = plt.subplots(figsize=(12, 5))
+        plt.plot(rolling.index, rolling['mean'], label='Mean', color='blue')
+        plt.plot(rolling.index, rolling['std'], label='Std', color='orange', alpha=0.5)
+        plt.axhline(0, color='black', linestyle='--')
+        plt.grid(True, alpha=0.3)
+        plt.legend()
+        plt.xticks(rotation=45)
+        plt.title("Rolling Mean and Std (30 Days)")
+        plt.xlabel("Date")
+        plt.ylabel("Sales")
+        plt.savefig(os.path.join(temp_dir, f"{dataset_type}_rolling.png"))
+        st.pyplot(fig)
+        plt.close(fig)
+
+        # 18. Heatmap: Sales Across Stores and Families
         pivot_data = df.pivot_table(values='sales', index='store_nbr', columns='family', aggfunc='sum', fill_value=0)
         fig, ax = plt.subplots(figsize=(12, 8))
         sns.heatmap(pivot_data, annot=False, cmap='YlOrRd', norm=plt.Normalize(), ax=ax)
@@ -222,7 +359,7 @@ def main():
                            'train_outlier_method', 'train_scale', 'train_configured', 'train_df']:
                     st.session_state.pop(key, None)
             with st.form("train_config"):
-                train = load_data(train_file, 'date', None)
+                train = load_data(train_file, 'date', 'sales')
                 st.dataframe(train.head(), height=100)
                 date_col = st.selectbox("Select Date Column", train.columns, index=train.columns.tolist().index('date') if 'date' in train.columns else 0, key="train_date")
                 target_col = st.selectbox("Select Target Column (e.g., sales)", train.columns, index=train.columns.tolist().index('sales') if 'sales' in train.columns else 0, key="train_target")
@@ -262,7 +399,7 @@ def main():
                 date_col = st.selectbox("Select Date Column", test.columns, index=test.columns.tolist().index('date') if 'date' in test.columns else 0, key="test_date")
                 numeric_cols, categorical_cols = detect_column_types(test, date_col)
                 numeric_cols = st.multiselect("Numeric Columns", test.columns, default=['id', 'store_nbr', 'onpromotion', 'dcoilwtico', 'transactions'] if all(col in test.columns for col in ['store_nbr', 'onpromotion', 'dcoilwtico']) else numeric_cols, key="test_numeric")
-                categorical_cols = st.multiselect("Categorical Columns", test.columns, default=['family', 'city', 'state', 'type_x', 'type_y', 'locale', 'locale_name', 'description', 'transferred'] if all(col in test.columns for col in ['family', 'city']) else categorical_cols, key="test_categorical")
+                categorical_cols = st.multiselect("Categorical Columns", test.columns, default=['family', 'city', 'state', 'type_x', 'type_y', 'locale', 'locale_name', 'description', 'transferred'] if all(col in train.columns for col in ['family', 'city']) else categorical_cols, key="test_categorical")
                 outlier_method = st.selectbox("Handle Outliers", ['None', 'Remove', 'Replace'], index=2, key="test_outlier")
                 outlier_method = outlier_method.lower() if outlier_method != 'None' else None
                 scale = st.checkbox("Apply Scaling", key="test_scale")
