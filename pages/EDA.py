@@ -140,17 +140,16 @@ def main():
         if train_file:
             st.session_state['train_content'] = train_file.read()
             st.session_state['train_file'] = train_file
-
-        with st.form("train_config"):
-            train = load_data(BytesIO(st.session_state.get('train_content', b'')), 'date', 'sales')
-            st.dataframe(train.head())
-            date_col = st.selectbox("Date Column", train.columns, index=0)
-            target_col = st.selectbox("Target Column", train.columns, index=0)
-            if st.form_submit_button("Apply"):
-                st.session_state['train_df'] = train
-                st.session_state['train_date'] = date_col
-                st.session_state['train_target'] = target_col
-                st.session_state['configured'] = True
+            train = load_data(BytesIO(st.session_state['train_content']), 'date', 'sales')
+            with st.form("train_config"):
+                st.dataframe(train.head())
+                date_col = st.selectbox("Date Column", train.columns, index=0)
+                target_col = st.selectbox("Target Column", train.columns, index=0)
+                if st.form_submit_button("Apply"):
+                    st.session_state['train_df'] = train
+                    st.session_state['train_date'] = date_col
+                    st.session_state['train_target'] = target_col
+                    st.session_state['configured'] = True
 
         if 'configured' in st.session_state:
             train = st.session_state['train_df']
@@ -190,15 +189,14 @@ def main():
         if test_file:
             st.session_state['test_content'] = test_file.read()
             st.session_state['test_file'] = test_file
-
-        with st.form("test_config"):
-            test = load_data(BytesIO(st.session_state.get('test_content', b'')), 'date', 'sales')
-            st.dataframe(test.head())
-            date_col = st.selectbox("Date Column", test.columns, index=0)
-            if st.form_submit_button("Apply"):
-                st.session_state['test_df'] = test
-                st.session_state['test_date'] = date_col
-                st.session_state['configured'] = True
+            test = load_data(BytesIO(st.session_state['test_content']), 'date', 'sales')
+            with st.form("test_config"):
+                st.dataframe(test.head())
+                date_col = st.selectbox("Date Column", test.columns, index=0)
+                if st.form_submit_button("Apply"):
+                    st.session_state['test_df'] = test
+                    st.session_state['test_date'] = date_col
+                    st.session_state['configured'] = True
 
         if 'configured' in st.session_state:
             test = st.session_state['test_df']
