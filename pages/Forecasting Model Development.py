@@ -203,35 +203,33 @@ def train_predict_model(train, test, features, date_col, target_col, model_name)
                 df_prophet = train_sub[[date_col, target_col]].rename(columns={date_col:"ds", target_col:"y"})
                 model = Prophet(daily_seasonality=True)
                 model.fit(df_prophet)
-                            future = test_sub[[date_col]].rename(columns={date_col:"ds"})
-            forecast = model.predict(future)
-            preds = forecast["yhat"].clip(0)
-        elif model_name == "LSTM":
-            seq_len = 14
-            X_train, y_train = prepare_lstm_sequences(train_sub, target_col, features, seq_len)
-            if len(X_train) == 0:
-                preds = np.zeros(len(test_sub))
+                future = test_sub[[date_col]].rename(columns={date_col:"ds"})
+                forecast = model.predict(future)
+                preds = forecast["yhat"].clip(0)
+            elif model_name == "LSTM":
+                seq_len = 14
+                X_train, y_train = prepare_lstm_sequences(train_sub, target_col, features, seq_len)
+                if len(X_train) == 0:
+                    preds = np.zeros(len(test_sub))
+                else:
+                    model = Sequential([
+                        LSTM(50, activation="relu", input_shape=(seq_len, len(features))),
+                        Dense(1)
+                    ])
+                    model.compile(optimizer="adam", loss="mse")
+                    model.fit(X_train, y_train, epochs=5, verbose=0)
+                    X_test_seq = train_sub[features].tail(seq_len).values.reshape(1, seq_len, len(features))
+                    preds = []
+                    for _ in range(len(test_sub)):
+                        pred = model.predict(X_test_seq)[0,0]
+                        preds.append(pred)
+                    preds = np.array(preds).clip(0)
             else:
-                model = Sequential([
-                    LSTM(50, activation="relu", input_shape=(seq_len, len(features))),
-                    Dense(1)
-                ])
-                model.compile(optimizer="adam", loss="mse")
-                model.fit(X_train, y_train, epochs=5, verbose=0)
-                # For test, use last seq_len rows from train_sub features
-                X_test_seq = train_sub[features].tail(seq_len).values.reshape(1, seq_len, len(features))
-                preds = []
-                for _ in range(len(test_sub)):
-                    pred = model.predict(X_test_seq)[0,0]
-                    preds.append(pred)
-                    # Slide window with predicted value (ignore for features)
-                preds = np.array(preds).clip(0)
-        else:
-            preds = np.zeros(len(test_sub))
+                preds = np.zeros(len(test_sub))
 
-    predictions.append(pd.DataFrame({
-        "id": test_sub["id"],
-        "predicted_sales": preds
-    }))
+        predictions.append(pd.DataFrame({
+            "id": test_sub["id"],
+            "predicted_sales": preds
+        }))
 
-return pd.concat(predictions).sort_values("id")
+    return pd.concat(predictions).sort_values("id")
