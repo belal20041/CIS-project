@@ -1,533 +1,405 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from datetime import datetime, date
-import traceback
-
-# Import modeling libraries with fallbacks
-try:
-    from prophet import Prophet
-except ImportError:
-    try:
-        from fbprophet import Prophet
-    except ImportError:
-        Prophet = None
-
-try:
-    from statsmodels.tsa.arima.model import ARIMA
-except ImportError:
-    try:
-        from statsmodels.tsa.arima_model import ARIMA
-    except ImportError:
-        ARIMA = None
-
-try:
-    from statsmodels.tsa.statespace.sarimax import SARIMAX
-except ImportError:
-    SARIMAX = None
-
-try:
-    import lightgbm as lgb
-except ImportError:
-    lgb = None
-
-try:
-    import xgboost as xgb
-except ImportError:
-    xgb = None
-
+from datetime import datetime
+from prophet import Prophet
+import statsmodels.api as sm
+from statsmodels.tsa.statespace.sarimax import SARIMAX
+import lightgbm as lgb
+import xgboost as xgb
 from sklearn.ensemble import RandomForestRegressor
+from sklearn.preprocessing import MinMaxScaler
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense, LSTM
 
-try:
-    import tensorflow as tf
-    from tensorflow.keras.models import Sequential
-    from tensorflow.keras.layers import LSTM as KerasLSTM, Dense
-    from sklearn.preprocessing import MinMaxScaler
-except ImportError:
-    tf = None
-    KerasLSTM = None
-    MinMaxScaler = None
-
-# Set page configuration
+# ================== App Configuration ==================
 st.set_page_config(page_title="Time Series Forecasting App", layout="wide")
-st.title("Time Series Forecasting Dashboard")
+st.title("Time Series Forecasting Application")
 
-# Initialize session state
-if 'df' not in st.session_state:
-    st.session_state['df'] = None
-    st.session_state['date_col'] = None
-    st.session_state['value_col'] = None
-    st.session_state['group_col'] = None
-    st.session_state['models'] = None
-    st.session_state['mode'] = None
+# Initialize session state for data and models if not already
+if 'data' not in st.session_state:
+    st.session_state['data'] = None
+if 'models' not in st.session_state:
+    st.session_state['models'] = {}
+if 'forecasts' not in st.session_state:
+    st.session_state['forecasts'] = {}
 
-def create_supervised(df, date_col, value_col, n_lags):
-    """
-    Create supervised learning dataset with lag features.
-    """
-    data = df.copy()
-    data = data.sort_values(date_col)
-    for lag in range(1, n_lags+1):
-        data[f"lag_{lag}"] = data[value_col].shift(lag)
-    data = data.dropna().reset_index(drop=True)
-    return data
+# ================== Function Definitions ==================
 
-def train_prophet(df, date_col, value_col, periods, seasonality_mode):
+def train_prophet_model(df):
     """
-    Train a Prophet model.
+    Train Prophet model on dataframe with columns ['ds','y'].
     """
-    if Prophet is None:
-        raise ImportError("Prophet library is not installed.")
-    data = df.rename(columns={date_col: 'ds', value_col: 'y'})[['ds','y']].dropna()
-    model = Prophet(seasonality_mode=seasonality_mode)
-    model.fit(data)
-    return model
+    try:
+        model = Prophet()
+        model.fit(df)
+        return model
+    except Exception as e:
+        st.error(f"Prophet training error: {e}")
+        return None
 
-def train_arima(df, date_col, value_col, order):
+def forecast_prophet_model(model, periods):
     """
-    Train an ARIMA model.
+    Forecast using Prophet model for given number of periods (integer).
     """
-    if ARIMA is None:
-        raise ImportError("statsmodels ARIMA is not available.")
-    y = df.sort_values(date_col)[value_col].astype(float)
-    model = ARIMA(y, order=order)
-    model_fit = model.fit()
-    return model_fit
+    future = model.make_future_dataframe(periods=periods, freq='D')
+    forecast = model.predict(future)
+    forecast_df = forecast[['ds', 'yhat', 'yhat_lower', 'yhat_upper']].copy()
+    forecast_df = forecast_df.tail(periods).reset_index(drop=True)
+    return forecast_df
 
-def train_sarima(df, date_col, value_col, order, seasonal_order):
+def train_arima_model(series, order):
     """
-    Train a SARIMAX (seasonal ARIMA) model.
+    Train ARIMA model on series with specified order (p,d,q).
     """
-    if SARIMAX is None:
-        raise ImportError("statsmodels SARIMAX is not available.")
-    y = df.sort_values(date_col)[value_col].astype(float)
-    model = SARIMAX(y, order=order, seasonal_order=seasonal_order,
-                    enforce_stationarity=False, enforce_invertibility=False)
-    model_fit = model.fit(disp=False)
-    return model_fit
+    try:
+        model = sm.tsa.ARIMA(series, order=order)
+        model_fit = model.fit()
+        return model_fit
+    except Exception as e:
+        st.error(f"ARIMA training error: {e}")
+        return None
 
-def train_lightgbm(df, date_col, value_col, params):
+def forecast_arima_model(model_fit, steps):
     """
-    Train a LightGBM regressor with lag features.
+    Forecast future values using ARIMA fitted model.
     """
-    if lgb is None:
-        raise ImportError("LightGBM is not installed.")
-    data = df.sort_values(date_col)
-    n_lags = params.get('lag', 1)
-    sup = create_supervised(data, date_col, value_col, n_lags)
-    if sup.empty:
-        raise ValueError("Not enough data for creating lag features.")
-    X = sup[[f'lag_{i}' for i in range(1, n_lags+1)]].values
-    y = sup[value_col].values
-    lgb_params = {
-        "n_estimators": params.get('n_estimators', 100),
-        "learning_rate": params.get('learning_rate', 0.1),
-        "max_depth": params.get('max_depth', None)
-    }
-    model = lgb.LGBMRegressor(**lgb_params)
-    model.fit(X, y)
-    return model
+    try:
+        forecast = model_fit.forecast(steps=steps)
+        if isinstance(forecast, (pd.Series, pd.DataFrame)):
+            return forecast
+        else:
+            return pd.Series(forecast)
+    except Exception as e:
+        st.error(f"ARIMA forecasting error: {e}")
+        return None
 
-def train_xgboost(df, date_col, value_col, params):
+def train_sarima_model(series, order, seasonal_order):
     """
-    Train an XGBoost regressor with lag features.
+    Train SARIMA (SARIMAX) model with given orders.
+    seasonal_order = (P,D,Q,s)
     """
-    if xgb is None:
-        raise ImportError("XGBoost is not installed.")
-    data = df.sort_values(date_col)
-    n_lags = params.get('lag', 1)
-    sup = create_supervised(data, date_col, value_col, n_lags)
-    if sup.empty:
-        raise ValueError("Not enough data for creating lag features.")
-    X = sup[[f'lag_{i}' for i in range(1, n_lags+1)]].values
-    y = sup[value_col].values
-    xgb_params = {
-        "n_estimators": params.get('n_estimators', 100),
-        "learning_rate": params.get('learning_rate', 0.1),
-        "max_depth": params.get('max_depth', None)
-    }
-    model = xgb.XGBRegressor(**xgb_params)
-    model.fit(X, y)
-    return model
+    try:
+        model = SARIMAX(series, order=order, seasonal_order=seasonal_order,
+                        enforce_stationarity=False, enforce_invertibility=False)
+        model_fit = model.fit(disp=False)
+        return model_fit
+    except Exception as e:
+        st.error(f"SARIMA training error: {e}")
+        return None
 
-def train_random_forest(df, date_col, value_col, params):
+def forecast_sarima_model(model_fit, steps):
     """
-    Train a RandomForest regressor with lag features.
+    Forecast future values using SARIMA fitted model.
     """
-    data = df.sort_values(date_col)
-    n_lags = params.get('lag', 1)
-    sup = create_supervised(data, date_col, value_col, n_lags)
-    if sup.empty:
-        raise ValueError("Not enough data for creating lag features.")
-    X = sup[[f'lag_{i}' for i in range(1, n_lags+1)]].values
-    y = sup[value_col].values
-    rf_params = {
-        "n_estimators": params.get('n_estimators', 100),
-        "max_depth": params.get('max_depth', None)
-    }
-    model = RandomForestRegressor(**rf_params)
-    model.fit(X, y)
-    return model
+    try:
+        forecast = model_fit.forecast(steps=steps)
+        if isinstance(forecast, (pd.Series, pd.DataFrame)):
+            return forecast
+        else:
+            return pd.Series(forecast)
+    except Exception as e:
+        st.error(f"SARIMA forecasting error: {e}")
+        return None
 
-def train_lstm(df, date_col, value_col, params):
+def create_supervised_data(series, n_lags):
     """
-    Train an LSTM model.
+    Convert a series to supervised learning format with given lags.
+    Returns feature matrix X and target vector y.
     """
-    if tf is None or KerasLSTM is None:
-        raise ImportError("TensorFlow/Keras is not installed.")
-    data = df.sort_values(date_col)
-    series = data[value_col].astype(float).values
-    scaler = MinMaxScaler()
-    series_scaled = scaler.fit_transform(series.reshape(-1, 1))
-    seq_len = params.get('seq_len', 10)
     X, y = [], []
-    for i in range(len(series_scaled) - seq_len):
-        X.append(series_scaled[i:i+seq_len, 0])
-        y.append(series_scaled[i+seq_len, 0])
-    X = np.array(X); y = np.array(y)
-    X = X.reshape((X.shape[0], X.shape[1], 1))
-    model = Sequential()
-    model.add(KerasLSTM(50, activation='relu', input_shape=(seq_len, 1)))
-    model.add(Dense(1))
-    model.compile(optimizer='adam', loss='mse')
-    model.fit(X, y, epochs=params.get('epochs', 10), batch_size=params.get('batch_size', 16), verbose=0)
-    return {"model": model, "scaler": scaler, "seq_len": seq_len}
+    for i in range(n_lags, len(series)):
+        X.append(series[i-n_lags:i])
+        y.append(series[i])
+    return np.array(X), np.array(y)
 
-# UI Layout
+def train_tree_model(X, y, model_type, **params):
+    """
+    Train a tree-based regression model (LightGBM, XGBoost, RandomForest).
+    """
+    try:
+        if model_type == 'LightGBM':
+            model = lgb.LGBMRegressor(**params)
+        elif model_type == 'XGBoost':
+            model = xgb.XGBRegressor(**params)
+        elif model_type == 'RandomForest':
+            model = RandomForestRegressor(**params)
+        else:
+            st.error("Invalid tree model type.")
+            return None
+        model.fit(X, y)
+        return model
+    except Exception as e:
+        st.error(f"{model_type} training error: {e}")
+        return None
+
+def forecast_with_tree(model, series, n_lags, steps):
+    """
+    Forecast future values using a trained tree-based model.
+    """
+    history = list(series[-n_lags:])
+    preds = []
+    for _ in range(steps):
+        if len(history) < n_lags:
+            st.error("Not enough data in history for given lags.")
+            return None
+        x_input = np.array(history[-n_lags:]).reshape(1, -1)
+        try:
+            yhat = model.predict(x_input)[0]
+        except Exception as e:
+            st.error(f"Forecast error: {e}")
+            return None
+        preds.append(yhat)
+        history.append(yhat)
+    return np.array(preds)
+
+def train_lstm_model(series, n_lags, n_epochs, n_units):
+    """
+    Train an LSTM model for time series forecasting.
+    """
+    try:
+        # Scale series to [0,1]
+        scaler = MinMaxScaler(feature_range=(0, 1))
+        values = np.array(series).reshape(-1, 1)
+        scaled = scaler.fit_transform(values)
+        # Create supervised dataset
+        X, y = create_supervised_data(scaled.flatten(), n_lags)
+        X = X.reshape((X.shape[0], X.shape[1], 1))
+        # Define LSTM network
+        model = Sequential()
+        model.add(LSTM(n_units, input_shape=(n_lags, 1)))
+        model.add(Dense(1))
+        model.compile(loss='mse', optimizer='adam')
+        model.fit(X, y, epochs=n_epochs, batch_size=1, verbose=0)
+        return model, scaler
+    except Exception as e:
+        st.error(f"LSTM training error: {e}")
+        return None, None
+
+def forecast_lstm_model(model, scaler, series, n_lags, steps):
+    """
+    Forecast future values using trained LSTM model.
+    """
+    try:
+        values = np.array(series).reshape(-1, 1)
+        scaled = scaler.transform(values)
+        history = list(scaled.flatten()[-n_lags:])
+        preds = []
+        for _ in range(steps):
+            X_input = np.array(history[-n_lags:]).reshape((1, n_lags, 1))
+            yhat_scaled = model.predict(X_input, verbose=0)
+            preds.append(yhat_scaled[0][0])
+            history.append(yhat_scaled[0][0])
+        preds = scaler.inverse_transform(np.array(preds).reshape(-1, 1)).flatten()
+        return preds
+    except Exception as e:
+        st.error(f"LSTM forecasting error: {e}")
+        return None
+
+# ================== Tab 1: Data Upload ==================
 tab1, tab2, tab3 = st.tabs(["Data Upload", "Model Training", "Prediction"])
 
 with tab1:
-    st.header("Data Upload")
-    st.markdown("Upload your time series CSV data with date and target columns.")
-    uploaded_file = st.file_uploader("Choose a CSV file", type="csv")
-    if uploaded_file:
+    st.header("1. Data Upload")
+    st.write("Upload a CSV file containing your time series data. It should have a date/time column and a value column.")
+    uploaded_file = st.file_uploader("Choose a CSV file", type=["csv"])
+    if uploaded_file is not None:
         try:
-            df = pd.read_csv(uploaded_file)
-            st.success("File loaded successfully!")
+            df_raw = pd.read_csv(uploaded_file)  # Read uploaded CSV into DataFrame
         except Exception as e:
-            st.error(f"Error reading CSV: {e}")
-            df = None
-        if df is not None:
-            st.write("Preview of data:")
-            st.dataframe(df.head())
-            date_col = st.selectbox("Select date column", df.columns)
-            value_col = st.selectbox("Select target column", df.columns)
-            group_col = st.selectbox("Select grouping column (optional)", [None] + list(df.columns))
-            if date_col and value_col:
-                if date_col == value_col:
-                    st.error("Date column and target column must be different.")
-                else:
-                    try:
-                        df[date_col] = pd.to_datetime(df[date_col])
-                        st.session_state['df'] = df
-                        st.session_state['date_col'] = date_col
-                        st.session_state['value_col'] = value_col
-                        st.session_state['group_col'] = group_col
-                        st.success("Data successfully loaded and parsed!")
-                    except Exception as e:
-                        st.error(f"Error parsing date column: {e}")
-
-with tab2:
-    st.header("Model Training")
-    if st.session_state['df'] is None:
-        st.info("Please upload data in the Data Upload tab first.")
-        st.stop()
-    df = st.session_state['df']
-    date_col = st.session_state['date_col']
-    value_col = st.session_state['value_col']
-    group_col = st.session_state['group_col']
-
-    st.write("Data summary:")
-    st.write(f"Date range: {df[date_col].min().date()} to {df[date_col].max().date()}")
-    if group_col:
-        st.write(f"Grouping by: {group_col}")
-    else:
-        st.write("No grouping (global model).")
-
-    # Date range for training data
-    df_sorted = df.sort_values(date_col)
-    min_date = df_sorted[date_col].min().date()
-    max_date = df_sorted[date_col].max().date()
-    start_date = st.date_input("Start date for training data", value=min_date)
-    end_date = st.date_input("End date for training data", value=max_date)
-    if start_date > end_date:
-        st.error("Error: Start date must be before end date.")
-        st.stop()
-    df_train = df_sorted[(df_sorted[date_col] >= pd.to_datetime(start_date)) &
-                         (df_sorted[date_col] <= pd.to_datetime(end_date))]
-    if df_train.empty:
-        st.error("No data in the selected date range.")
-        st.stop()
-
-    mode = st.radio("Training mode", ["Global", "Group"])
-    st.session_state['mode'] = mode
-    groups = None
-    if mode == "Group":
-        if not group_col:
-            group_col = st.selectbox("Select grouping column", 
-                                     [c for c in df_train.columns if c not in [date_col, value_col]])
-            st.session_state['group_col'] = group_col
-        if group_col:
-            groups = df_train[group_col].unique().tolist()
-            st.write(f"Groups: {groups}")
-        else:
-            st.error("Grouping mode selected but no group column provided.")
-            st.stop()
-
-    models_selected = st.multiselect("Select model(s) to train",
-                                     ["Prophet", "ARIMA", "SARIMA", "LightGBM", "XGBoost", "RandomForest", "LSTM"])
-    if not models_selected:
-        st.warning("Please select at least one model.")
-        st.stop()
-
-    # Parameter configuration
-    prophet_params = {}
-    arima_params = {}
-    sarima_params = {}
-    lgb_params = {}
-    xgb_params = {}
-    rf_params = {}
-    lstm_params = {}
-
-    if "Prophet" in models_selected:
-        with st.expander("Prophet Parameters"):
-            st.subheader("Prophet Settings")
-            periods = st.number_input("Forecast periods (for prediction)", min_value=1, value=30, step=1)
-            seasonality_mode = st.selectbox("Seasonality mode", ["additive", "multiplicative"])
-            prophet_params['periods'] = periods
-            prophet_params['seasonality_mode'] = seasonality_mode
-    if "ARIMA" in models_selected:
-        with st.expander("ARIMA Parameters"):
-            st.subheader("ARIMA Settings")
-            p = st.number_input("p (AR order)", min_value=0, value=1, step=1)
-            d = st.number_input("d (difference order)", min_value=0, value=1, step=1)
-            q = st.number_input("q (MA order)", min_value=0, value=1, step=1)
-            arima_params['order'] = (p, d, q)
-    if "SARIMA" in models_selected:
-        with st.expander("SARIMA Parameters"):
-            st.subheader("SARIMA Settings")
-            p = st.number_input("p (AR order)", min_value=0, value=1, step=1)
-            d = st.number_input("d (difference order)", min_value=0, value=1, step=1)
-            q = st.number_input("q (MA order)", min_value=0, value=1, step=1)
-            P = st.number_input("P (seasonal AR order)", min_value=0, value=1, step=1)
-            D = st.number_input("D (seasonal diff order)", min_value=0, value=1, step=1)
-            Q = st.number_input("Q (seasonal MA order)", min_value=0, value=1, step=1)
-            m = st.number_input("m (seasonal period)", min_value=1, value=12, step=1)
-            sarima_params['order'] = (p, d, q)
-            sarima_params['seasonal_order'] = (P, D, Q, m)
-    if "LightGBM" in models_selected:
-        with st.expander("LightGBM Parameters"):
-            st.subheader("LightGBM Settings")
-            lgb_lag = st.number_input("Lag features", min_value=1, value=1, step=1)
-            n_estimators = st.number_input("n_estimators", min_value=1, value=100, step=1)
-            learning_rate = st.number_input("learning_rate", min_value=0.01, value=0.1, step=0.01, format="%.2f")
-            max_depth = st.number_input("max_depth (0 = no limit)", min_value=0, value=0, step=1)
-            lgb_params['lag'] = int(lgb_lag)
-            lgb_params['n_estimators'] = int(n_estimators)
-            lgb_params['learning_rate'] = float(learning_rate)
-            lgb_params['max_depth'] = int(max_depth) if max_depth != 0 else None
-    if "XGBoost" in models_selected:
-        with st.expander("XGBoost Parameters"):
-            st.subheader("XGBoost Settings")
-            xgb_lag = st.number_input("Lag features", min_value=1, value=1, step=1, key="xgb_lag")
-            n_estimators = st.number_input("n_estimators", min_value=1, value=100, step=1, key="xgb_n")
-            learning_rate = st.number_input("learning_rate", min_value=0.01, value=0.1, step=0.01, format="%.2f", key="xgb_lr")
-            max_depth = st.number_input("max_depth (0 = no limit)", min_value=0, value=0, step=1, key="xgb_depth")
-            xgb_params['lag'] = int(xgb_lag)
-            xgb_params['n_estimators'] = int(n_estimators)
-            xgb_params['learning_rate'] = float(learning_rate)
-            xgb_params['max_depth'] = int(max_depth) if max_depth != 0 else None
-    if "RandomForest" in models_selected:
-        with st.expander("RandomForest Parameters"):
-            st.subheader("RandomForest Settings")
-            rf_lag = st.number_input("Lag features", min_value=1, value=1, step=1, key="rf_lag")
-            n_estimators = st.number_input("n_estimators", min_value=1, value=100, step=1, key="rf_n")
-            max_depth = st.number_input("max_depth (0 = no limit)", min_value=0, value=0, step=1, key="rf_depth")
-            rf_params['lag'] = int(rf_lag)
-            rf_params['n_estimators'] = int(n_estimators)
-            rf_params['max_depth'] = int(max_depth) if max_depth != 0 else None
-    if "LSTM" in models_selected:
-        with st.expander("LSTM Parameters"):
-            st.subheader("LSTM Settings")
-            seq_len = st.number_input("Sequence length", min_value=1, value=10, step=1)
-            epochs = st.number_input("Epochs", min_value=1, value=10, step=1)
-            batch_size = st.number_input("Batch size", min_value=1, value=16, step=1)
-            lstm_params['seq_len'] = int(seq_len)
-            lstm_params['epochs'] = int(epochs)
-            lstm_params['batch_size'] = int(batch_size)
-
-    if st.button("Train Models"):
-        models_dict = {}
-        error_models = []
-        total = len(models_selected)
-        progress_bar = st.progress(0)
-        for i, model_name in enumerate(models_selected):
-            st.write(f"Training {model_name}...")
-            try:
-                if mode == "Global":
-                    if model_name == "Prophet":
-                        model_obj = train_prophet(df_train, date_col, value_col,
-                                                  prophet_params.get('periods', 30),
-                                                  prophet_params.get('seasonality_mode', 'additive'))
-                    elif model_name == "ARIMA":
-                        model_obj = train_arima(df_train, date_col, value_col,
-                                                arima_params.get('order', (1,1,1)))
-                    elif model_name == "SARIMA":
-                        model_obj = train_sarima(df_train, date_col, value_col,
-                                                 sarima_params.get('order', (1,1,1)),
-                                                 sarima_params.get('seasonal_order', (1,1,1,12)))
-                    elif model_name == "LightGBM":
-                        model_obj = train_lightgbm(df_train, date_col, value_col, lgb_params)
-                    elif model_name == "XGBoost":
-                        model_obj = train_xgboost(df_train, date_col, value_col, xgb_params)
-                    elif model_name == "RandomForest":
-                        model_obj = train_random_forest(df_train, date_col, value_col, rf_params)
-                    elif model_name == "LSTM":
-                        model_obj = train_lstm(df_train, date_col, value_col, lstm_params)
-                    else:
-                        model_obj = None
-                    models_dict[model_name] = model_obj
-                else:
-                    group_models = {}
-                    for grp in groups:
-                        df_grp = df_train[df_train[group_col] == grp]
-                        if model_name == "Prophet":
-                            model_grp = train_prophet(df_grp, date_col, value_col,
-                                                      prophet_params.get('periods', 30),
-                                                      prophet_params.get('seasonality_mode', 'additive'))
-                        elif model_name == "ARIMA":
-                            model_grp = train_arima(df_grp, date_col, value_col,
-                                                    arima_params.get('order', (1,1,1)))
-                        elif model_name == "SARIMA":
-                            model_grp = train_sarima(df_grp, date_col, value_col,
-                                                     sarima_params.get('order', (1,1,1)),
-                                                     sarima_params.get('seasonal_order', (1,1,1,12)))
-                        elif model_name == "LightGBM":
-                            model_grp = train_lightgbm(df_grp, date_col, value_col, lgb_params)
-                        elif model_name == "XGBoost":
-                            model_grp = train_xgboost(df_grp, date_col, value_col, xgb_params)
-                        elif model_name == "RandomForest":
-                            model_grp = train_random_forest(df_grp, date_col, value_col, rf_params)
-                        elif model_name == "LSTM":
-                            model_grp = train_lstm(df_grp, date_col, value_col, lstm_params)
-                        else:
-                            model_grp = None
-                        group_models[grp] = model_grp
-                    models_dict[model_name] = group_models
-                st.success(f"{model_name} trained successfully.")
-            except Exception as e:
-                error_models.append((model_name, str(e)))
-                st.error(f"Error training {model_name}: {e}")
-                st.error(traceback.format_exc())
-            progress_bar.progress(int((i+1)/total * 100))
-        st.session_state['models'] = models_dict
-        st.session_state['model_params'] = {
-            "Prophet": prophet_params,
-            "ARIMA": arima_params,
-            "SARIMA": sarima_params,
-            "LightGBM": lgb_params,
-            "XGBoost": xgb_params,
-            "RandomForest": rf_params,
-            "LSTM": lstm_params
-        }
-        if error_models:
-            failed = ", ".join([m for m,_ in error_models])
-            st.warning(f"Models failed to train: {failed}")
-        else:
-            st.success("All models trained successfully!")
-
-with tab3:
-    st.header("Prediction")
-    if st.session_state['models'] is None:
-        st.info("Please train models in the Model Training tab first.")
-        st.stop()
-    models_dict = st.session_state['models']
-    mode = st.session_state.get('mode', 'Global')
-    df = st.session_state['df']
-    date_col = st.session_state['date_col']
-    value_col = st.session_state['value_col']
-    group_col = st.session_state['group_col']
-
-    model_choice = st.selectbox("Select model for prediction", list(models_dict.keys()))
-    model_obj = models_dict[model_choice]
-    if isinstance(model_obj, dict):
-        group_choice = st.selectbox("Select group for prediction", list(model_obj.keys()))
-        model_obj = model_obj[group_choice]
-        df_input = df[df[group_col] == group_choice].copy()
-    else:
-        df_input = df.copy()
-
-    forecast_periods = st.number_input("Forecast periods", min_value=1, value=30, step=1)
-    if st.button("Generate Forecast"):
-        try:
-            if model_choice == "Prophet":
-                future = model_obj.make_future_dataframe(periods=forecast_periods)
-                forecast = model_obj.predict(future)
-                st.write("Forecast results:")
-                st.dataframe(forecast[['ds', 'yhat', 'yhat_lower', 'yhat_upper']].tail(forecast_periods))
-                st.line_chart(forecast.set_index('ds')['yhat'])
-            elif model_choice in ["ARIMA", "SARIMA"]:
-                fcst = model_obj.get_forecast(steps=forecast_periods)
-                summary = fcst.summary_frame()
-                st.write("Forecast results:")
-                st.dataframe(summary[['mean', 'mean_ci_lower', 'mean_ci_upper']])
-                st.line_chart(summary['mean'])
-            elif model_choice in ["LightGBM", "XGBoost", "RandomForest"]:
-                params = st.session_state.get('model_params', {})
-                if model_choice == "LightGBM":
-                    lag = params.get('LightGBM', {}).get('lag', 1)
-                elif model_choice == "XGBoost":
-                    lag = params.get('XGBoost', {}).get('lag', 1)
-                else:
-                    lag = params.get('RandomForest', {}).get('lag', 1)
-                series = df_input.sort_values(date_col)[value_col].tolist()
-                forecasts = []
-                for _ in range(forecast_periods):
-                    if len(series) < lag:
-                        st.error("Not enough data to make lag-based forecasts.")
-                        break
-                    X_input = np.array(series[-lag:]).reshape(1, -1)
-                    y_pred = model_obj.predict(X_input)[0]
-                    forecasts.append(y_pred)
-                    series.append(y_pred)
-                last_dt = pd.to_datetime(df_input[date_col].max())
+            st.error(f"Error reading CSV file: {e}")
+            df_raw = None
+        if df_raw is not None:
+            st.write("Preview of uploaded data:")
+            st.dataframe(df_raw.head())
+            date_col = st.selectbox("Select the date/time column", options=list(df_raw.columns))
+            value_col = st.selectbox("Select the value column", options=list(df_raw.columns))
+            if st.button("Load Data"):
                 try:
-                    freq = pd.infer_freq(df_input[date_col])
-                    if freq:
-                        future_dates = pd.date_range(start=last_dt + pd.Timedelta(1, unit=freq), periods=len(forecasts), freq=freq)
-                    else:
-                        raise ValueError
-                except Exception:
-                    future_dates = [last_dt + pd.Timedelta(days=i) for i in range(1, len(forecasts)+1)]
-                result = pd.DataFrame({"ds": future_dates, "prediction": forecasts})
-                st.write("Forecast results:")
-                st.dataframe(result)
-                st.line_chart(result.set_index('ds')['prediction'])
-            elif model_choice == "LSTM":
-                model_map = model_obj
-                net = model_map['model']
-                scaler = model_map['scaler']
-                seq_len = model_map['seq_len']
-                series = df_input.sort_values(date_col)[value_col].values.astype(float)
-                scaled_series = scaler.transform(series.reshape(-1,1)).flatten().tolist()
-                forecasts = []
-                for _ in range(forecast_periods):
-                    if len(scaled_series) < seq_len:
-                        st.error("Not enough data to forecast with LSTM.")
-                        break
-                    X_input = np.array(scaled_series[-seq_len:]).reshape(1, seq_len, 1)
-                    yhat_scaled = net.predict(X_input, verbose=0)[0][0]
-                    yhat = scaler.inverse_transform([[yhat_scaled]])[0][0]
-                    forecasts.append(yhat)
-                    scaled_series.append(yhat_scaled)
-                last_dt = pd.to_datetime(df_input[date_col].max())
-                future_dates = [last_dt + pd.Timedelta(days=i) for i in range(1, len(forecasts)+1)]
-                result = pd.DataFrame({"ds": future_dates, "prediction": forecasts})
-                st.write("Forecast results:")
-                st.dataframe(result)
-                st.line_chart(result.set_index('ds')['prediction'])
-            else:
-                st.error("Selected model not recognized.")
-        except Exception as e:
-            st.error(f"Error during forecasting: {e}")
-            st.error(traceback.format_exc())
+                    df_temp = df_raw[[date_col, value_col]].dropna()
+                    df_temp[date_col] = pd.to_datetime(df_temp[date_col])  # Convert to datetime
+                    df_temp = df_temp.sort_values(by=date_col)
+                    df_temp.rename(columns={date_col: 'ds', value_col: 'y'}, inplace=True)
+                    st.session_state['data'] = df_temp
+                    # Clear any previously trained models and forecasts
+                    st.session_state['models'].clear()
+                    st.session_state['forecasts'].clear()
+                    st.success("Data successfully loaded into the app.")
+                    st.write(df_temp.describe())
+                    st.line_chart(df_temp.set_index('ds')['y'])
+                except Exception as e:
+                    st.error(f"Error processing data: {e}")
+
+# ================== Tab 2: Model Training ==================
+with tab2:
+    st.header("2. Model Training")
+    if st.session_state['data'] is None:
+        st.warning("Please upload and load data in the Data Upload tab first.")
+    else:
+        data_df = st.session_state['data']
+        st.write(f"Training data loaded with {len(data_df)} records.")
+        # Model selection
+        model_option = st.selectbox(
+            "Select Forecasting Model",
+            options=["Prophet", "ARIMA", "SARIMA", "LightGBM", "XGBoost", "RandomForest", "LSTM"]
+        )
+        # Display hyperparameters based on model
+        if model_option == "Prophet":
+            st.write("Prophet has no hyperparameters to set.")
+        # ARIMA parameters
+        if model_option == "ARIMA":
+            p = st.number_input("AR order (p)", min_value=0, max_value=5, value=1)
+            d = st.number_input("Differencing order (d)", min_value=0, max_value=2, value=0)
+            q = st.number_input("MA order (q)", min_value=0, max_value=5, value=0)
+        # SARIMA parameters
+        if model_option == "SARIMA":
+            p = st.number_input("AR order (p)", min_value=0, max_value=5, value=1, key="p_sarima")
+            d = st.number_input("Differencing order (d)", min_value=0, max_value=2, value=0, key="d_sarima")
+            q = st.number_input("MA order (q)", min_value=0, max_value=5, value=0, key="q_sarima")
+            P = st.number_input("Seasonal AR order (P)", min_value=0, max_value=2, value=1, key="P_sarima")
+            D = st.number_input("Seasonal differencing (D)", min_value=0, max_value=1, value=0, key="D_sarima")
+            Q = st.number_input("Seasonal MA (Q)", min_value=0, max_value=2, value=0, key="Q_sarima")
+            S = st.number_input("Seasonal period (s)", min_value=1, max_value=24, value=12, key="S_sarima")
+        # Tree-based model parameters
+        if model_option in ["LightGBM", "XGBoost", "RandomForest"]:
+            n_lags = st.number_input("Number of lag observations to use", min_value=1, max_value=len(data_df)-1, value=1)
+            n_estimators = st.number_input("Number of trees/estimators", min_value=1, max_value=500, value=100)
+        # LSTM parameters
+        if model_option == "LSTM":
+            n_lags = st.number_input("Number of lag observations to use", min_value=1, max_value=len(data_df)-1, value=1, key="lstm_lag")
+            n_epochs = st.number_input("Number of training epochs", min_value=1, max_value=1000, value=50, key="lstm_epochs")
+            n_units = st.number_input("Number of LSTM units", min_value=1, max_value=100, value=50, key="lstm_units")
+
+        # Train button
+        if st.button("Train Model"):
+            series = data_df['y']
+            # ================= Prophet Training =================
+            if model_option == "Prophet":
+                if len(series) < 3:
+                    st.error("Not enough data for Prophet. Need at least 3 data points.")
+                else:
+                    model = train_prophet_model(data_df)
+                    if model:
+                        st.session_state['models']["Prophet"] = model
+                        st.success("Prophet model trained successfully.")
+            # ================= ARIMA Training =================
+            if model_option == "ARIMA":
+                order = (p, d, q)
+                if len(series) < max(order) + 2:
+                    st.warning(f"Data length is short for ARIMA order {order}. Adjusting order.")
+                    order = (min(p, len(series)-2), d, min(q, len(series)-2))
+                    st.write(f"Adjusted ARIMA order: {order}")
+                model_fit = train_arima_model(series, order)
+                if model_fit:
+                    st.session_state['models']["ARIMA"] = model_fit
+                    st.success(f"ARIMA model (order={order}) trained successfully.")
+            # ================= SARIMA Training =================
+            if model_option == "SARIMA":
+                order = (p, d, q)
+                seasonal_order = (P, D, Q, S)
+                if len(series) < sum(order) + sum(seasonal_order[:3]) + 1:
+                    st.warning("Data length is small for SARIMA parameters. Consider simpler parameters.")
+                model_fit = train_sarima_model(series, order, seasonal_order)
+                if model_fit:
+                    st.session_state['models']["SARIMA"] = model_fit
+                    st.success(f"SARIMA model (order={order}, seasonal_order={seasonal_order}) trained successfully.")
+            # ================= Tree-based Model Training =================
+            if model_option in ["LightGBM", "XGBoost", "RandomForest"]:
+                if n_lags >= len(series):
+                    st.warning(f"Number of lags too large. Adjusting to {len(series)-1}.")
+                    n_lags = len(series)-1
+                X, y = create_supervised_data(series.values, n_lags)
+                if len(X) == 0:
+                    st.error("Not enough data points for the given lags.")
+                else:
+                    model_fit = train_tree_model(X, y, model_option, n_estimators=n_estimators)
+                    if model_fit:
+                        st.session_state['models'][model_option] = (model_fit, n_lags)
+                        st.success(f"{model_option} model trained successfully.")
+            # ================= LSTM Training =================
+            if model_option == "LSTM":
+                if n_lags >= len(series):
+                    st.warning(f"Number of lags too large. Adjusting to {len(series)-1}.")
+                    n_lags = len(series) - 1
+                if len(series) - n_lags < 1:
+                    st.error("Not enough data points to train LSTM with these lags.")
+                else:
+                    model_fit, scaler = train_lstm_model(series.values, n_lags, n_epochs, n_units)
+                    if model_fit:
+                        st.session_state['models']["LSTM"] = (model_fit, scaler, n_lags)
+                        st.success("LSTM model trained successfully.")
+
+# ================== Tab 3: Prediction ==================
+with tab3:
+    st.header("3. Prediction")
+    if st.session_state['data'] is None:
+        st.warning("Please upload data and train a model before forecasting.")
+    else:
+        if not st.session_state['models']:
+            st.warning("No trained model available. Please train a model in the Model Training tab.")
+        else:
+            model_option = st.selectbox("Select model for prediction", options=list(st.session_state['models'].keys()))
+            horizon = st.number_input("Forecast horizon (number of periods)", min_value=1, value=10)
+            if st.button("Generate Forecast"):
+                series = st.session_state['data']['y']
+                # ================= Prophet Forecast =================
+                if model_option == "Prophet":
+                    model = st.session_state['models']['Prophet']
+                    future_df = forecast_prophet_model(model, horizon)
+                    st.write("Forecast results (Prophet):")
+                    st.dataframe(future_df)
+                    # Download CSV
+                    csv = future_df.to_csv(index=False).encode()
+                    st.download_button("Download Forecast as CSV", csv, "forecast_prophet.csv", "text/csv")
+                # ================= ARIMA Forecast =================
+                if model_option == "ARIMA":
+                    model_fit = st.session_state['models']['ARIMA']
+                    forecast_vals = forecast_arima_model(model_fit, horizon)
+                    if forecast_vals is not None:
+                        df_forecast = pd.DataFrame({
+                            'step': np.arange(1, horizon+1),
+                            'forecast': forecast_vals.flatten()
+                        })
+                        st.write("Forecast results (ARIMA):")
+                        st.dataframe(df_forecast)
+                        csv = df_forecast.to_csv(index=False).encode()
+                        st.download_button("Download Forecast as CSV", csv, "forecast_arima.csv", "text/csv")
+                # ================= SARIMA Forecast =================
+                if model_option == "SARIMA":
+                    model_fit = st.session_state['models']['SARIMA']
+                    forecast_vals = forecast_sarima_model(model_fit, horizon)
+                    if forecast_vals is not None:
+                        df_forecast = pd.DataFrame({
+                            'step': np.arange(1, horizon+1),
+                            'forecast': forecast_vals.flatten()
+                        })
+                        st.write("Forecast results (SARIMA):")
+                        st.dataframe(df_forecast)
+                        csv = df_forecast.to_csv(index=False).encode()
+                        st.download_button("Download Forecast as CSV", csv, "forecast_sarima.csv", "text/csv")
+                # ================= Tree-based Forecast =================
+                if model_option in ["LightGBM", "XGBoost", "RandomForest"]:
+                    model_fit, n_lags = st.session_state['models'][model_option]
+                    preds = forecast_with_tree(model_fit, series.values, n_lags, horizon)
+                    if preds is not None:
+                        df_forecast = pd.DataFrame({
+                            'step': np.arange(1, horizon+1),
+                            'forecast': preds.flatten()
+                        })
+                        st.write(f"Forecast results ({model_option}):")
+                        st.dataframe(df_forecast)
+                        csv = df_forecast.to_csv(index=False).encode()
+                        st.download_button("Download Forecast as CSV", csv, f"forecast_{model_option.lower()}.csv", "text/csv")
+                # ================= LSTM Forecast =================
+                if model_option == "LSTM":
+                    model_fit, scaler, n_lags = st.session_state['models']['LSTM']
+                    preds = forecast_lstm_model(model_fit, scaler, series.values, n_lags, horizon)
+                    if preds is not None:
+                        df_forecast = pd.DataFrame({
+                            'step': np.arange(1, horizon+1),
+                            'forecast': preds.flatten()
+                        })
+                        st.write("Forecast results (LSTM):")
+                        st.dataframe(df_forecast)
+                        csv = df_forecast.to_csv(index=False).encode()
+                        st.download_button("Download Forecast as CSV", csv, "forecast_lstm.csv", "text/csv")
